@@ -17,11 +17,19 @@
 
 package org.apache.doris.nereids.trees.plans.algebra;
 
+import org.apache.doris.nereids.hint.DistributeHint;
+import org.apache.doris.nereids.trees.expressions.EqualPredicate;
+import org.apache.doris.nereids.trees.expressions.EqualTo;
 import org.apache.doris.nereids.trees.expressions.Expression;
+import org.apache.doris.nereids.trees.expressions.MarkJoinSlotReference;
+import org.apache.doris.nereids.trees.plans.DistributeType;
+import org.apache.doris.nereids.trees.plans.DistributeType.JoinDistributeType;
 import org.apache.doris.nereids.trees.plans.JoinType;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Common interface for logical/physical join.
@@ -31,14 +39,48 @@ public interface Join {
 
     List<Expression> getHashJoinConjuncts();
 
-    Optional<Expression> getOtherJoinCondition();
+    default List<EqualTo> getEqualToConjuncts() {
+        return getHashJoinConjuncts().stream().filter(EqualTo.class::isInstance).map(EqualTo.class::cast)
+                .collect(Collectors.toList());
+    }
+
+    default List<EqualPredicate> getEqualPredicates() {
+        return Stream.concat(getHashJoinConjuncts().stream(), getMarkJoinConjuncts().stream())
+                .filter(EqualPredicate.class::isInstance).map(EqualPredicate.class::cast)
+                .collect(Collectors.toList());
+    }
+
+    List<Expression> getOtherJoinConjuncts();
+
+    List<Expression> getMarkJoinConjuncts();
 
     Optional<Expression> getOnClauseCondition();
 
+    DistributeHint getDistributeHint();
+
+    boolean isMarkJoin();
+
+    Optional<MarkJoinSlotReference> getMarkJoinSlotReference();
+
+    default boolean hasDistributeHint() {
+        return getDistributeHint().distributeType != DistributeType.NONE;
+    }
+
+    default JoinDistributeType getLeftHint() {
+        return JoinDistributeType.NONE;
+    }
+
     /**
-     * The join plan has join condition or not.
+     * Get the hint type of join's right child.
      */
-    default boolean hasJoinCondition() {
-        return !getHashJoinConjuncts().isEmpty() || getOtherJoinCondition().isPresent();
+    default JoinDistributeType getRightHint() {
+        switch (getDistributeHint().distributeType) {
+            case SHUFFLE_RIGHT:
+                return JoinDistributeType.SHUFFLE;
+            case BROADCAST_RIGHT:
+                return JoinDistributeType.BROADCAST;
+            default:
+                return JoinDistributeType.NONE;
+        }
     }
 }

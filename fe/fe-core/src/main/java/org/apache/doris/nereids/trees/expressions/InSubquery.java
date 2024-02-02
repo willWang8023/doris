@@ -19,12 +19,16 @@ package org.apache.doris.nereids.trees.expressions;
 
 import org.apache.doris.nereids.exceptions.UnboundException;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
+import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
+import org.apache.doris.nereids.types.BooleanType;
 import org.apache.doris.nereids.types.DataType;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * In predicate expression.
@@ -39,20 +43,32 @@ public class InSubquery extends SubqueryExpr {
         super(Objects.requireNonNull(listQuery.getQueryPlan(), "subquery can not be null"));
         this.compareExpr = Objects.requireNonNull(compareExpression, "compareExpr can not be null");
         this.listQuery = Objects.requireNonNull(listQuery, "listQuery can not be null");
-        this.isNot = Objects.requireNonNull(isNot, "isNot can not be null");
+        this.isNot = isNot;
     }
 
     public InSubquery(Expression compareExpr, ListQuery listQuery, List<Slot> correlateSlots, boolean isNot) {
+        this(compareExpr, listQuery, correlateSlots, Optional.empty(), isNot);
+    }
+
+    /**
+     * InSubquery Constructor.
+     */
+    public InSubquery(Expression compareExpr,
+                      ListQuery listQuery,
+                      List<Slot> correlateSlots,
+                      Optional<Expression> typeCoercionExpr,
+                      boolean isNot) {
         super(Objects.requireNonNull(listQuery.getQueryPlan(), "subquery can not be null"),
-                Objects.requireNonNull(correlateSlots, "correlateSlots can not be null"));
+                Objects.requireNonNull(correlateSlots, "correlateSlots can not be null"),
+                typeCoercionExpr);
         this.compareExpr = Objects.requireNonNull(compareExpr, "compareExpr can not be null");
         this.listQuery = Objects.requireNonNull(listQuery, "listQuery can not be null");
-        this.isNot = Objects.requireNonNull(isNot, "isNot can not be null");
+        this.isNot = isNot;
     }
 
     @Override
     public DataType getDataType() throws UnboundException {
-        return listQuery.getDataType();
+        return BooleanType.INSTANCE;
     }
 
     @Override
@@ -62,7 +78,7 @@ public class InSubquery extends SubqueryExpr {
 
     @Override
     public String toSql() {
-        return this.compareExpr.toSql() + " IN (INSUBQUERY) " + super.toSql();
+        return this.compareExpr.toSql() + " IN (" + super.toSql() + ")";
     }
 
     @Override
@@ -94,21 +110,38 @@ public class InSubquery extends SubqueryExpr {
     }
 
     @Override
+    public List<Expression> children() {
+        return Lists.newArrayList(compareExpr, listQuery);
+    }
+
+    @Override
     public boolean equals(Object o) {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
+        if (!super.equals(o)) {
             return false;
         }
         InSubquery inSubquery = (InSubquery) o;
-        return Objects.equals(this.compareExpr, inSubquery.getCompareExpr())
-                && checkEquals(this.queryPlan, inSubquery.queryPlan)
-                && Objects.equals(this.isNot, inSubquery.isNot);
+        return super.equals(inSubquery)
+                && Objects.equals(this.compareExpr, inSubquery.getCompareExpr())
+                && Objects.equals(this.listQuery, inSubquery.listQuery)
+                && this.isNot == inSubquery.isNot;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(this.compareExpr, this.listQuery, this.isNot);
+    }
+
+    @Override
+    public Expression withTypeCoercion(DataType dataType) {
+        return new InSubquery(compareExpr, listQuery, correlateSlots,
+            dataType == listQuery.queryPlan.getOutput().get(0).getDataType()
+                ? Optional.of(listQuery.queryPlan.getOutput().get(0))
+                : Optional.of(new Cast(listQuery.queryPlan.getOutput().get(0), dataType)),
+            isNot);
+    }
+
+    @Override
+    public InSubquery withSubquery(LogicalPlan subquery) {
+        return new InSubquery(compareExpr, listQuery.withSubquery(subquery), correlateSlots, typeCoercionExpr, isNot);
     }
 }

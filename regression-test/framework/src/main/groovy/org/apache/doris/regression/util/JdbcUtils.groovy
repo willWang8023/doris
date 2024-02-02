@@ -21,6 +21,7 @@ import com.google.common.collect.ImmutableList
 import groovy.lang.Tuple2
 
 import java.sql.Connection
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.ResultSetMetaData
 
@@ -35,6 +36,29 @@ class JdbcUtils {
             }
         }
     }
+
+    static Tuple2<List<List<Object>>, ResultSetMetaData> executeQueryToList(Connection conn, String sql) {
+        conn.createStatement().withCloseable { stmt ->
+            return toList(stmt.executeQuery(sql))
+        }
+    }
+
+    static PreparedStatement prepareStatement(Connection conn, String sql) {
+        return conn.prepareStatement(sql);
+    }
+
+    static Tuple2<List<List<Object>>, ResultSetMetaData> executeToStringList(Connection conn, PreparedStatement stmt) {
+        return toStringList(stmt.executeQuery())
+    }
+
+    // static Tuple2<List<List<Object>>, ResultSetMetaData> executeToStringList(Connection conn, PreparedStatement stmt) {
+    //     boolean hasResultSet = stmt.execute()
+    //     if (!hasResultSet) {
+    //         return [ImmutableList.of(ImmutableList.of(stmt.getUpdateCount())), null]
+    //     } else {
+    //         return toStringList(stmt.resultSet)
+    //     }
+    // }
 
     static Tuple2<List<List<Object>>, ResultSetMetaData> executeToStringList(Connection conn, String sql) {
         conn.prepareStatement(sql).withCloseable { stmt ->

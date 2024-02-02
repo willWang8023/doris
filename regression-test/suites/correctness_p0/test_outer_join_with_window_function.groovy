@@ -21,7 +21,7 @@ suite("test_outer_join_with_with_window_function") {
     """
 
     sql """
-        CREATE TABLE `dwd_online_detail` (
+        CREATE TABLE IF NOT EXISTS `dwd_online_detail` (
         `logout_time` datetime NOT NULL DEFAULT "9999-12-30 00:00:00",
         `login_time` datetime NOT NULL DEFAULT "9999-12-30 00:00:00",
         `game_code` varchar(50) NOT NULL DEFAULT "-",
@@ -50,7 +50,7 @@ suite("test_outer_join_with_with_window_function") {
     """
 
     sql """
-        CREATE TABLE `ods_logout` (
+        CREATE TABLE IF NOT EXISTS `ods_logout` (
         `day` date NULL COMMENT "",
         `game` varchar(500) NULL COMMENT "",
         `plat` varchar(500) NULL COMMENT "",
@@ -92,7 +92,7 @@ suite("test_outer_join_with_with_window_function") {
     """
 
     sql """
-        CREATE TABLE `dim_account_userid_mapping` (
+        CREATE TABLE IF NOT EXISTS `dim_account_userid_mapping` (
         `end_time` datetime NOT NULL DEFAULT "9999-12-30 00:00:00",
         `start_time` datetime NOT NULL DEFAULT "9999-12-30 00:00:00",
         `game_code` varchar(50) NOT NULL,
@@ -119,7 +119,7 @@ suite("test_outer_join_with_with_window_function") {
     """
 
     sql """
-        CREATE TABLE `ods_login` (
+        CREATE TABLE IF NOT EXISTS `ods_login` (
         `day` date NULL COMMENT "",
         `game` varchar(500) NULL COMMENT "",
         `plat` varchar(500) NULL COMMENT "",
@@ -218,7 +218,6 @@ suite("test_outer_join_with_with_window_function") {
         "dynamic_partition.buckets" = "4",
         "dynamic_partition.create_history_partition" = "true",
         "dynamic_partition.history_partition_num" = "50",
-        "dynamic_partition.hot_partition_num" = "2",
         "dynamic_partition.reserved_history_periods" = "NULL",
         "dynamic_partition.start_day_of_month" = "1",
         "in_memory" = "false",

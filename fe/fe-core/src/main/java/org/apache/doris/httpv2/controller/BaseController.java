@@ -17,20 +17,18 @@
 
 package org.apache.doris.httpv2.controller;
 
-import org.apache.doris.analysis.CompoundPredicate;
 import org.apache.doris.analysis.UserIdentity;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.cluster.ClusterNamespace;
+import org.apache.doris.common.AuthenticationException;
 import org.apache.doris.common.Config;
+import org.apache.doris.common.util.NetUtils;
 import org.apache.doris.httpv2.HttpAuthManager;
 import org.apache.doris.httpv2.HttpAuthManager.SessionValue;
 import org.apache.doris.httpv2.exception.UnauthorizedException;
-import org.apache.doris.mysql.privilege.PaloPrivilege;
-import org.apache.doris.mysql.privilege.PrivBitSet;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.service.FrontendOptions;
-import org.apache.doris.system.SystemInfoService;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -70,8 +68,7 @@ public class BaseController {
             UserIdentity currentUser = checkPassword(authInfo);
 
             if (checkAuth) {
-                checkGlobalAuth(currentUser, PrivPredicate.of(PrivBitSet.of(PaloPrivilege.ADMIN_PRIV,
-                        PaloPrivilege.NODE_PRIV), CompoundPredicate.Operator.OR));
+                checkGlobalAuth(currentUser, PrivPredicate.ADMIN);
             }
 
             SessionValue value = new SessionValue();
@@ -79,12 +76,11 @@ public class BaseController {
             value.password = authInfo.password;
             addSession(request, response, value);
 
-            ConnectContext ctx = new ConnectContext(null);
+            ConnectContext ctx = new ConnectContext();
             ctx.setQualifiedUser(authInfo.fullUserName);
             ctx.setRemoteIP(authInfo.remoteIp);
             ctx.setCurrentUserIdentity(currentUser);
             ctx.setEnv(Env.getCurrentEnv());
-            ctx.setCluster(SystemInfoService.DEFAULT_CLUSTER);
             ctx.setThreadLocalInfo();
             LOG.debug("check auth without cookie success for user: {}, thread: {}",
                     currentUser, Thread.currentThread().getId());
@@ -102,6 +98,11 @@ public class BaseController {
     protected void addSession(HttpServletRequest request, HttpServletResponse response, SessionValue value) {
         String key = UUID.randomUUID().toString();
         Cookie cookie = new Cookie(PALO_SESSION_ID, key);
+        if (Config.enable_https) {
+            cookie.setSecure(true);
+        } else {
+            cookie.setSecure(false);
+        }
         cookie.setMaxAge(PALO_SESSION_EXPIRED_TIME);
         cookie.setPath("/");
         cookie.setHttpOnly(true);
@@ -123,21 +124,19 @@ public class BaseController {
             return null;
         }
 
-        if (checkAuth && !Env.getCurrentEnv().getAuth().checkGlobalPriv(sessionValue.currentUser,
-                PrivPredicate.of(PrivBitSet.of(PaloPrivilege.ADMIN_PRIV,
-                        PaloPrivilege.NODE_PRIV), CompoundPredicate.Operator.OR))) {
+        if (checkAuth && !Env.getCurrentEnv().getAccessManager().checkGlobalPriv(sessionValue.currentUser,
+                PrivPredicate.ADMIN)) {
             // need to check auth and check auth failed
             return null;
         }
 
         updateCookieAge(request, PALO_SESSION_ID, PALO_SESSION_EXPIRED_TIME, response);
 
-        ConnectContext ctx = new ConnectContext(null);
+        ConnectContext ctx = new ConnectContext();
         ctx.setQualifiedUser(sessionValue.currentUser.getQualifiedUser());
         ctx.setRemoteIP(request.getRemoteHost());
         ctx.setCurrentUserIdentity(sessionValue.currentUser);
         ctx.setEnv(Env.getCurrentEnv());
-        ctx.setCluster(SystemInfoService.DEFAULT_CLUSTER);
         ctx.setThreadLocalInfo();
         LOG.debug("check cookie success for user: {}, thread: {}",
                 sessionValue.currentUser, Thread.currentThread().getId());
@@ -145,7 +144,6 @@ public class BaseController {
         authInfo.fullUserName = sessionValue.currentUser.getQualifiedUser();
         authInfo.remoteIp = request.getRemoteHost();
         authInfo.password = sessionValue.password;
-        authInfo.cluster = SystemInfoService.DEFAULT_CLUSTER;
         return authInfo;
     }
 
@@ -169,6 +167,12 @@ public class BaseController {
             if (cookie.getName() != null && cookie.getName().equals(cookieName)) {
                 cookie.setMaxAge(age);
                 cookie.setPath("/");
+                cookie.setHttpOnly(true);
+                if (Config.enable_https) {
+                    cookie.setSecure(true);
+                } else {
+                    cookie.setSecure(false);
+                }
                 response.addCookie(cookie);
             }
         }
@@ -184,13 +188,13 @@ public class BaseController {
         public String toString() {
             StringBuilder sb = new StringBuilder();
             sb.append("user: ").append(fullUserName).append(", remote ip: ").append(remoteIp);
-            sb.append(", password: ").append(password).append(", cluster: ").append(cluster);
+            sb.append(", password: ").append("********").append(", cluster: ").append(cluster);
             return sb.toString();
         }
     }
 
     protected void checkGlobalAuth(UserIdentity currentUser, PrivPredicate predicate) throws UnauthorizedException {
-        if (!Env.getCurrentEnv().getAuth().checkGlobalPriv(currentUser, predicate)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkGlobalPriv(currentUser, predicate)) {
             throw new UnauthorizedException("Access denied; you need (at least one of) the "
                     + predicate.getPrivs().toString() + " privilege(s) for this operation");
         }
@@ -198,7 +202,7 @@ public class BaseController {
 
     protected void checkDbAuth(UserIdentity currentUser, String db, PrivPredicate predicate)
             throws UnauthorizedException {
-        if (!Env.getCurrentEnv().getAuth().checkDbPriv(currentUser, db, predicate)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkDbPriv(currentUser, db, predicate)) {
             throw new UnauthorizedException("Access denied; you need (at least one of) the "
                     + predicate.getPrivs().toString() + " privilege(s) for this operation");
         }
@@ -206,7 +210,7 @@ public class BaseController {
 
     protected void checkTblAuth(UserIdentity currentUser, String db, String tbl, PrivPredicate predicate)
             throws UnauthorizedException {
-        if (!Env.getCurrentEnv().getAuth().checkTblPriv(currentUser, db, tbl, predicate)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(currentUser, db, tbl, predicate)) {
             throw new UnauthorizedException("Access denied; you need (at least one of) the "
                     + predicate.getPrivs().toString() + " privilege(s) for this operation");
         }
@@ -216,10 +220,11 @@ public class BaseController {
     protected UserIdentity checkPassword(ActionAuthorizationInfo authInfo)
             throws UnauthorizedException {
         List<UserIdentity> currentUser = Lists.newArrayList();
-        if (!Env.getCurrentEnv().getAuth().checkPlainPassword(authInfo.fullUserName,
-                authInfo.remoteIp, authInfo.password, currentUser)) {
-            throw new UnauthorizedException("Access denied for "
-                    + authInfo.fullUserName + "@" + authInfo.remoteIp);
+        try {
+            Env.getCurrentEnv().getAuth().checkPlainPassword(authInfo.fullUserName,
+                    authInfo.remoteIp, authInfo.password, currentUser);
+        } catch (AuthenticationException e) {
+            throw new UnauthorizedException(e.formatErrMsg());
         }
         Preconditions.checkState(currentUser.size() == 1);
         return currentUser.get(0);
@@ -242,7 +247,7 @@ public class BaseController {
         if (Strings.isNullOrEmpty(encodedAuthString)) {
             return false;
         }
-        String[] parts = encodedAuthString.split(" ");
+        String[] parts = encodedAuthString.split("\\s+");
         if (parts.length != 2) {
             return false;
         }
@@ -262,12 +267,9 @@ public class BaseController {
             authInfo.fullUserName = authString.substring(0, index);
             final String[] elements = authInfo.fullUserName.split("@");
             if (elements != null && elements.length < 2) {
-                authInfo.fullUserName = ClusterNamespace.getFullName(SystemInfoService.DEFAULT_CLUSTER,
-                        authInfo.fullUserName);
-                authInfo.cluster = SystemInfoService.DEFAULT_CLUSTER;
+                authInfo.fullUserName = ClusterNamespace.getNameFromFullName(authInfo.fullUserName);
             } else if (elements != null && elements.length == 2) {
-                authInfo.fullUserName = ClusterNamespace.getFullName(elements[1], elements[0]);
-                authInfo.cluster = elements[1];
+                authInfo.fullUserName = ClusterNamespace.getNameFromFullName(elements[0]);
             }
             authInfo.password = authString.substring(index + 1);
             authInfo.remoteIp = request.getRemoteAddr();
@@ -294,6 +296,13 @@ public class BaseController {
     }
 
     protected String getCurrentFrontendURL() {
-        return "http://" + FrontendOptions.getLocalHostAddress() + ":" + Config.http_port;
+        if (Config.enable_https) {
+            // this could be the result of redirection.
+            return "https://" + NetUtils
+                    .getHostPortInAccessibleFormat(FrontendOptions.getLocalHostAddress(), Config.https_port);
+        } else {
+            return "http://" + NetUtils
+                    .getHostPortInAccessibleFormat(FrontendOptions.getLocalHostAddress(), Config.http_port);
+        }
     }
 }

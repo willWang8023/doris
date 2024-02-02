@@ -20,13 +20,14 @@
     {% set table = relation.include(database=False) %}
     {{ sql_header if sql_header is not none }}
     {%if temporary %}
-        {{doris__drop_relation(relation)}};
+        {{doris__drop_relation(relation)}}
     {% endif %}
     create table {{ table }}
     {{ doris__duplicate_key() }}
+    {{ doris__table_comment()}}
     {{ doris__partition_by() }}
     {{ doris__distributed_by() }}
-    {{ doris__properties() }} as {{ sql }};
+    {{ doris__properties() }} as {{ doris__table_colume_type(sql) }};
 
 {%- endmacro %}
 
@@ -36,8 +37,21 @@
     {{ sql_header if sql_header is not none }}
     create table {{ table }}
     {{ doris__unique_key() }}
+    {{ doris__table_comment()}}
     {{ doris__partition_by() }}
     {{ doris__distributed_by() }}
-    {{ doris__properties() }} as {{ sql }};
+    {{ doris__properties() }} as {{ doris__table_colume_type(sql) }};
 
+{%- endmacro %}
+
+
+{% macro doris__table_colume_type(sql) -%}
+    {% set cols = model.get('columns') %}
+    {% if cols %}
+        select {{get_table_columns_and_constraints()}} from (
+            {{sql}}
+        ) `_table_colume_type_name`
+    {% else %}
+        {{sql}}
+    {%- endif -%}
 {%- endmacro %}

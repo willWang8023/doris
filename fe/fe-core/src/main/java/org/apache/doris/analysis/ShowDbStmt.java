@@ -46,11 +46,6 @@ public class ShowDbStmt extends ShowStmt {
         this.pattern = pattern;
     }
 
-    public ShowDbStmt(String pattern, Expr where) {
-        this.pattern = pattern;
-        this.where = where;
-    }
-
     public ShowDbStmt(String pattern, Expr where, String catalogName) {
         this.pattern = pattern;
         this.where = where;
@@ -68,6 +63,7 @@ public class ShowDbStmt extends ShowStmt {
     @Override
     public void analyze(Analyzer analyzer) throws AnalysisException, UserException {
         super.analyze(analyzer);
+        this.catalogName = this.catalogName == null ? analyzer.getDefaultCatalog() : this.catalogName;
     }
 
     @Override
@@ -81,14 +77,15 @@ public class ShowDbStmt extends ShowStmt {
         // Columns
         SelectList selectList = new SelectList();
         ExprSubstitutionMap aliasMap = new ExprSubstitutionMap(false);
-        SelectListItem item = new SelectListItem(new SlotRef(TABLE_NAME, "SCHEMA_NAME"), DB_COL);
+        TableName tableName = new TableName(catalogName, InfoSchemaDb.DATABASE_NAME, "schemata");
+        SelectListItem item = new SelectListItem(new SlotRef(tableName, "SCHEMA_NAME"), DB_COL);
         selectList.addItem(item);
         aliasMap.put(new SlotRef(null, DB_COL), item.getExpr().clone(null));
         where = where.substitute(aliasMap);
         selectStmt = new SelectStmt(selectList,
-                new FromClause(Lists.newArrayList(new TableRef(TABLE_NAME, null))),
+                new FromClause(Lists.newArrayList(new TableRef(tableName, null))),
                 where, null, null, null, LimitElement.NO_LIMIT);
-
+        analyzer.setSchemaInfo(null, null, catalogName);
         return selectStmt;
     }
 
@@ -98,7 +95,7 @@ public class ShowDbStmt extends ShowStmt {
         if (pattern != null) {
             sb.append(" LIKE '").append(pattern).append("'");
         }
-        if (catalogName != null) {
+        if (!InternalCatalog.INTERNAL_CATALOG_NAME.equals(catalogName)) {
             sb.append(" FROM ").append(catalogName);
         }
         return sb.toString();
@@ -114,3 +111,4 @@ public class ShowDbStmt extends ShowStmt {
         return META_DATA;
     }
 }
+

@@ -16,11 +16,32 @@
 // under the License.
 
 #pragma once
+#include <gen_cpp/Types_types.h>
+#include <glog/logging.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <memory>
+#include <ostream>
+#include <string>
+#include <typeinfo>
+
 #include "olap/hll.h"
-#include "vec/columns/column.h"
+#include "runtime/define_primitive_type.h"
+#include "serde/data_type_hll_serde.h"
 #include "vec/columns/column_complex.h"
+#include "vec/core/field.h"
 #include "vec/core/types.h"
 #include "vec/data_types/data_type.h"
+#include "vec/data_types/serde/data_type_serde.h"
+
+namespace doris {
+namespace vectorized {
+class BufferReadable;
+class BufferWritable;
+class IColumn;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 class DataTypeHLL : public IDataType {
@@ -35,11 +56,16 @@ public:
     const char* get_family_name() const override { return "HLL"; }
 
     TypeIndex get_type_id() const override { return TypeIndex::HLL; }
+    TypeDescriptor get_type_as_type_descriptor() const override { return TypeDescriptor(TYPE_HLL); }
+
+    doris::FieldType get_storage_field_type() const override {
+        return doris::FieldType::OLAP_FIELD_TYPE_HLL;
+    }
 
     int64_t get_uncompressed_serialized_bytes(const IColumn& column,
-                                              int data_version) const override;
-    char* serialize(const IColumn& column, char* buf, int data_version) const override;
-    const char* deserialize(const char* buf, IColumn* column, int data_version) const override;
+                                              int be_exec_version) const override;
+    char* serialize(const IColumn& column, char* buf, int be_exec_version) const override;
+    const char* deserialize(const char* buf, IColumn* column, int be_exec_version) const override;
     MutableColumnPtr create_column() const override;
 
     bool get_is_parametric() const override { return false; }
@@ -56,28 +82,28 @@ public:
     }
     bool have_maximum_size_of_value() const override { return false; }
 
-    bool can_be_used_as_version() const override { return false; }
-
-    bool can_be_inside_nullable() const override { return true; }
-
     bool equals(const IDataType& rhs) const override { return typeid(rhs) == typeid(*this); }
-
-    bool is_categorial() const override { return is_value_represented_by_integer(); }
 
     bool can_be_inside_low_cardinality() const override { return false; }
 
     std::string to_string(const IColumn& column, size_t row_num) const override { return "HLL()"; }
     void to_string(const IColumn& column, size_t row_num, BufferWritable& ostr) const override;
+    Status from_string(ReadBuffer& rb, IColumn* column) const override;
 
-    virtual Field get_default() const override {
-        LOG(FATAL) << "Method get_default() is not implemented for data type " << get_name();
-        // unreachable
-        return String();
+    Field get_default() const override { return HyperLogLog::empty(); }
+
+    [[noreturn]] Field get_field(const TExprNode& node) const override {
+        LOG(FATAL) << "Unimplemented get_field for HLL";
+        __builtin_unreachable();
     }
 
     static void serialize_as_stream(const HyperLogLog& value, BufferWritable& buf);
 
     static void deserialize_as_stream(HyperLogLog& value, BufferReadable& buf);
+
+    DataTypeSerDeSPtr get_serde(int nesting_level = 1) const override {
+        return std::make_shared<DataTypeHLLSerDe>(nesting_level);
+    };
 };
 
 } // namespace doris::vectorized

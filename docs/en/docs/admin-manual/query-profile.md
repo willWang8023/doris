@@ -26,7 +26,12 @@ under the License.
 
 # Statistics of query execution
 
-This document focuses on introducing the **Running Profile** which recorded runtime status of Doris in query execution. Using these statistical information, we can understand the execution of frgment to become a expert of Doris's **debugging and tuning**.
+This document focuses on introducing the **Running Profile** which recorded runtime status of Doris in query execution. Using these statistical information, we can understand the execution of fragment to become a expert of Doris's **debugging and tuning**.
+
+You can also refer to following statements to view profile in command line:
+
+- [SHOW QUERY PROFILE](../sql-manual/sql-reference/Show-Statements/SHOW-QUERY-PROFILE.md)
+- [SHOW LOAD PROFILE](../sql-manual/sql-reference/Show-Statements/SHOW-LOAD-PROFILE.md)
 
 ## Noun Interpretation
 
@@ -39,6 +44,7 @@ This document focuses on introducing the **Running Profile** which recorded runt
 ## Basic concepts
 
 FE splits the query plan into fragments and distributes them to BE for task execution. BE records the statistics of **Running State** when executing fragment. BE print the outputs statistics of fragment execution into the log. FE can also collect these statistics recorded by each fragment and print the results on FE's web page.
+
 ## Specific operation
 
 Turn on the report switch on FE through MySQL command
@@ -103,7 +109,7 @@ There are many statistical information collected at BE.  so we list the correspo
 #### `BlockMgr`
   - BlocksCreated: Number of Block be created by BlockMgr
   - BlocksRecycled: Number of Block be recycled by BlockMgr
-  - BytesWritten: How many bytes be writen to spill to disk
+  - BytesWritten: How many bytes be written to spill to disk
   - MaxBlockSize: Max size of one Block
   - TotalReadBlockTime: Total time read block from disk
 
@@ -148,7 +154,7 @@ There are many statistical information collected at BE.  so we list the correspo
   - HTResizeTime: Time spent in resizing hashtable
   - HTResize: Number of times hashtable resizes
   - HashBuckets: Number of buckets in hashtable
-  - HashBucketsWithDuplicate: Number of buckets with duplicatenode in hashtable
+  - HashBucketsWithDuplicate: Number of buckets with duplicate node in hashtable
   - HashCollisions: Number of hash conflicts generated 
   - HashDuplicateNodes: Number of duplicate nodes with the same buckets in hashtable
   - HashFailedProbe: Number of failed probe operations
@@ -204,7 +210,7 @@ OLAP_SCAN_NODE (id=0):(Active: 1.2ms,% non-child: 0.00%)
   - RowsReturnedRate: 6.979K /sec       # RowsReturned/ActiveTime
   - TabletCount: 20                     # The number of Tablets involved in this ScanNode.
   - TotalReadThroughput: 74.70 KB/sec   # BytesRead divided by the total time spent in this node (from Open to Close). For IO bounded queries, this should be very close to the total throughput of all the disks
-  - ScannerBatchWaitTime: 426.886us     # To count the time the transfer thread waits for the scaner thread to return rowbatch.
+  - ScannerBatchWaitTime: 426.886us     # To count the time the transfer thread waits for the scanner thread to return rowbatch. In pipeline, this value is always 0.
   - ScannerWorkerWaitTime: 17.745us     # To count the time that the scanner thread waits for the available worker threads in the thread pool.
   OlapScanner:
     - BlockConvertTime: 8.941us         # The time it takes to convert a vectorized Block into a RowBlock with a row structure. The vectorized Block is VectorizedRowBatch in V1 and RowBlockV2 in V2.

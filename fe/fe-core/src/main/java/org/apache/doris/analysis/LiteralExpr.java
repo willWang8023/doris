@@ -21,9 +21,11 @@
 package org.apache.doris.analysis;
 
 import org.apache.doris.catalog.PrimitiveType;
+import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.NotImplementedException;
+import org.apache.doris.mysql.MysqlProto;
 
 import com.google.common.base.Preconditions;
 import org.apache.logging.log4j.LogManager;
@@ -32,7 +34,11 @@ import org.apache.logging.log4j.Logger;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr> {
     private static final Logger LOG = LogManager.getLogger(LiteralExpr.class);
@@ -72,6 +78,7 @@ public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr
             case DECIMAL32:
             case DECIMAL64:
             case DECIMAL128:
+            case DECIMAL256:
                 literalExpr = new DecimalLiteral(value);
                 break;
             case CHAR:
@@ -81,11 +88,20 @@ public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr
                 literalExpr = new StringLiteral(value);
                 literalExpr.setType(type);
                 break;
+            case JSONB:
+                literalExpr = new JsonLiteral(value);
+                break;
             case DATE:
             case DATETIME:
             case DATEV2:
             case DATETIMEV2:
                 literalExpr = new DateLiteral(value, type);
+                break;
+            case IPV4:
+                literalExpr = new IPv4Literal(value);
+                break;
+            case IPV6:
+                literalExpr = new IPv6Literal(value);
                 break;
             default:
                 throw new AnalysisException("Type[" + type.toSql() + "] not supported.");
@@ -93,6 +109,33 @@ public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr
 
         Preconditions.checkNotNull(literalExpr);
         return literalExpr;
+    }
+
+
+    public static String getStringLiteralForComplexType(Expr v) {
+        if (!(v instanceof NullLiteral) && v.getType().isScalarType()
+                && (Type.getNumericTypes().contains((ScalarType) v.getActualScalarType(v.getType()))
+                || v.getType() == Type.BOOLEAN)) {
+            return v.getStringValueInFe();
+        } else if (v.getType().isComplexType()) {
+            // these type should also call getStringValueInFe which should handle special case for itself
+            return v.getStringValueInFe();
+        } else {
+            return v.getStringValueForArray();
+        }
+    }
+
+    public static String getStringLiteralForStreamLoad(Expr v) {
+        if (!(v instanceof NullLiteral) && v.getType().isScalarType()
+                && (Type.getNumericTypes().contains((ScalarType) v.getActualScalarType(v.getType()))
+                || v.getType() == Type.BOOLEAN)) {
+            return v.getStringValueInFe();
+        } else if (v.getType().isComplexType()) {
+            // these type should also call getStringValueInFe which should handle special case for itself
+            return v.getStringValueForStreamLoad();
+        } else {
+            return v.getStringValueForArray();
+        }
     }
 
     /**
@@ -120,6 +163,8 @@ public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr
             literalExpr = new DecimalLiteral(value);
         } else if (expr instanceof StringLiteral) {
             literalExpr = new StringLiteral(value);
+        } else if (expr instanceof JsonLiteral) {
+            literalExpr = new JsonLiteral(value);
         } else if (expr instanceof DateLiteral) {
             literalExpr = new DateLiteral(value, expr.getType());
         } else {
@@ -128,6 +173,39 @@ public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr
 
         Preconditions.checkNotNull(literalExpr);
         return literalExpr;
+    }
+
+    public Expr convertTo(Type targetType) throws AnalysisException {
+        Preconditions.checkArgument(!targetType.equals(Type.INVALID));
+        if (this instanceof NullLiteral) {
+            return NullLiteral.create(targetType);
+        } else if (targetType.isBoolean()) {
+            if (this instanceof StringLiteral || this instanceof JsonLiteral) {
+                return new BoolLiteral(getStringValue());
+            } else {
+                if (getLongValue() != 0) {
+                    return new BoolLiteral(true);
+                } else {
+                    return new BoolLiteral(false);
+                }
+            }
+        } else if (targetType.isIntegerType()) {
+            return new IntLiteral(getLongValue(), targetType);
+        } else if (targetType.isLargeIntType()) {
+            return new LargeIntLiteral(getStringValue());
+        } else if (targetType.isFloatingPointType()) {
+            return new FloatLiteral(getDoubleValue(), targetType);
+        } else if (targetType.isDecimalV2() || targetType.isDecimalV3()) {
+            DecimalLiteral literal = new DecimalLiteral(getStringValue(),
+                    ((ScalarType) targetType).getScalarScale());
+            literal.setType(targetType);
+            return literal;
+        } else if (targetType.isStringType()) {
+            return new StringLiteral(getStringValue());
+        } else if (targetType.isDateType()) {
+            return new StringLiteral(getStringValue()).convertToDate(targetType);
+        }
+        return this;
     }
 
     public static LiteralExpr createInfinity(Type type, boolean isMax) throws AnalysisException {
@@ -182,9 +260,15 @@ public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr
     // literal values to the metastore rather than to Palo backends. This is similar to
     // the toSql() method, but does not perform any formatting of the string values. Neither
     // method unescapes string values.
-    public String getStringValue() {
-        return null;
+    @Override
+    public abstract String getStringValue();
+
+    public String getStringValueInFe() {
+        return getStringValue();
     }
+
+    @Override
+    public abstract String getStringValueForArray();
 
     public long getLongValue() {
         return 0;
@@ -252,7 +336,146 @@ public abstract class LiteralExpr extends Expr implements Comparable<LiteralExpr
     }
 
     @Override
-    public void finalizeImplForNereids() throws AnalysisException {
+    public String toString() {
+        return getStringValue();
+    }
 
+    // Parse from binary data, the format follows mysql binary protocal
+    // see https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_binary_resultset.html.
+    // Return next offset
+    public void setupParamFromBinary(ByteBuffer data) {
+        Preconditions.checkState(false,
+                "should implement this in derived class. " + this.type.toSql());
+    }
+
+    public static LiteralExpr getLiteralByMysqlType(int mysqlType) throws AnalysisException {
+        switch (mysqlType) {
+            // MYSQL_TYPE_TINY
+            case 1:
+                return LiteralExpr.create("0", Type.TINYINT);
+            // MYSQL_TYPE_SHORT
+            case 2:
+                return LiteralExpr.create("0", Type.SMALLINT);
+            // MYSQL_TYPE_LONG
+            case 3:
+                return LiteralExpr.create("0", Type.INT);
+            // MYSQL_TYPE_LONGLONG
+            case 8:
+                return LiteralExpr.create("0", Type.BIGINT);
+            // MYSQL_TYPE_FLOAT
+            case 4:
+                return LiteralExpr.create("0", Type.FLOAT);
+            // MYSQL_TYPE_DOUBLE
+            case 5:
+                return LiteralExpr.create("0", Type.DOUBLE);
+            // MYSQL_TYPE_DECIMAL
+            case 0:
+            // MYSQL_TYPE_NEWDECIMAL
+            case 246:
+                return LiteralExpr.create("0", Type.DECIMAL32);
+            // MYSQL_TYPE_TIME
+            case 11:
+                return LiteralExpr.create("", Type.TIME);
+            // MYSQL_TYPE_DATE
+            case 10:
+                return LiteralExpr.create("1970-01-01", Type.DATE);
+            // MYSQL_TYPE_DATETIME
+            case 12:
+            // MYSQL_TYPE_TIMESTAMP
+            case 7:
+            // MYSQL_TYPE_TIMESTAMP2
+            case 17:
+                return LiteralExpr.create("1970-01-01 00:00:00", Type.DATETIME);
+            // MYSQL_TYPE_STRING
+            case 254:
+            case 253:
+                return LiteralExpr.create("", Type.STRING);
+            // MYSQL_TYPE_VARCHAR
+            case 15:
+                return LiteralExpr.create("", Type.VARCHAR);
+            default:
+                return null;
+        }
+    }
+
+    @Override
+    public String getExprName() {
+        if (!this.exprName.isPresent()) {
+            this.exprName = Optional.of("literal");
+        }
+        return this.exprName.get();
+    }
+
+    // Port from mysql get_param_length
+    public static int getParmLen(ByteBuffer data) {
+        int maxLen = data.remaining();
+        if (maxLen < 1) {
+            return 0;
+        }
+        // get and advance 1 byte
+        int len = MysqlProto.readInt1(data);
+        if (len == 252) {
+            if (maxLen < 3) {
+                return 0;
+            }
+            // get and advance 2 bytes
+            return MysqlProto.readInt2(data);
+        } else if (len == 253) {
+            if (maxLen < 4) {
+                return 0;
+            }
+            // get and advance 3 bytes
+            return MysqlProto.readInt3(data);
+        } else if (len == 254) {
+            /*
+            In our client-server protocol all numbers bigger than 2^24
+            stored as 8 bytes with uint8korr. Here we always know that
+            parameter length is less than 2^4 so we don't look at the second
+            4 bytes. But still we need to obey the protocol hence 9 in the
+            assignment below.
+            */
+            if (maxLen < 9) {
+                return 0;
+            }
+            len = MysqlProto.readInt4(data);
+            MysqlProto.readFixedString(data, 4);
+            return len;
+        } else if (len == 255) {
+            return 0;
+        } else {
+            return len;
+        }
+    }
+
+    @Override
+    public boolean matchExprs(List<Expr> exprs, SelectStmt stmt, boolean ignoreAlias, TupleDescriptor tuple) {
+        return true;
+    }
+
+    /** whether is ZERO value **/
+    public boolean isZero() {
+        boolean isZero = false;
+        switch (type.getPrimitiveType()) {
+            case TINYINT:
+            case SMALLINT:
+            case INT:
+            case BIGINT:
+            case LARGEINT:
+                isZero = this.getLongValue() == 0;
+                break;
+            case FLOAT:
+            case DOUBLE:
+                isZero = this.getDoubleValue() == 0.0f;
+                break;
+            case DECIMALV2:
+            case DECIMAL32:
+            case DECIMAL64:
+            case DECIMAL128:
+            case DECIMAL256:
+                isZero = Objects.equals(((DecimalLiteral) this).getValue(), BigDecimal.ZERO);
+                break;
+            default:
+        }
+        return isZero;
     }
 }

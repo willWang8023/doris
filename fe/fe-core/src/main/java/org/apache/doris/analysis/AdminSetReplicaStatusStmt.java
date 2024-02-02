@@ -33,7 +33,7 @@ import java.util.Map;
  *  Required:
  *      "tablet_id" = "10010",
  *      "backend_id" = "10001"
- *      "status" = "bad"/"ok"
+ *      "status" = "drop"/"bad"/"ok"
  */
 public class AdminSetReplicaStatusStmt extends DdlStmt {
 
@@ -55,7 +55,7 @@ public class AdminSetReplicaStatusStmt extends DdlStmt {
         super.analyze(analyzer);
 
         // check auth
-        if (!Env.getCurrentEnv().getAuth().checkGlobalPriv(ConnectContext.get(), PrivPredicate.ADMIN)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkGlobalPriv(ConnectContext.get(), PrivPredicate.ADMIN)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR, "ADMIN");
         }
 
@@ -81,7 +81,7 @@ public class AdminSetReplicaStatusStmt extends DdlStmt {
                 }
             } else if (key.equalsIgnoreCase(STATUS)) {
                 status = ReplicaStatus.valueOf(val.toUpperCase());
-                if (status != ReplicaStatus.BAD && status != ReplicaStatus.OK) {
+                if (status != ReplicaStatus.BAD && status != ReplicaStatus.OK && status != ReplicaStatus.DROP) {
                     throw new AnalysisException("Do not support setting replica status as " + val);
                 }
             } else {

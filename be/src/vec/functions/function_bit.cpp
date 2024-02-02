@@ -18,6 +18,15 @@
 // https://github.com/ClickHouse/ClickHouse/blob/master/src/Functions/bitAnd.cpp
 // and modified by Doris
 
+#include <utility>
+
+#include "common/status.h"
+#include "vec/columns/column.h"
+#include "vec/columns/column_string.h"
+#include "vec/columns/column_vector.h"
+#include "vec/common/pod_array_fwd.h"
+#include "vec/core/types.h"
+#include "vec/data_types/data_type_number.h"
 #include "vec/data_types/number_traits.h"
 #include "vec/functions/function_binary_arithmetic.h"
 #include "vec/functions/function_totype.h"
@@ -102,7 +111,7 @@ struct BitLengthImpl {
 };
 
 using FunctionBitAnd = FunctionBinaryArithmetic<BitAndImpl, NameBitAnd, false>;
-using FunctionBitNot = FunctionUnaryArithmetic<BitNotImpl, NameBitNot, false>;
+using FunctionBitNot = FunctionUnaryArithmetic<BitNotImpl, NameBitNot>;
 using FunctionBitOr = FunctionBinaryArithmetic<BitOrImpl, NameBitOr, false>;
 using FunctionBitXor = FunctionBinaryArithmetic<BitXorImpl, NameBitXor, false>;
 using FunctionBitLength = FunctionUnaryToType<BitLengthImpl, NameBitLength>;

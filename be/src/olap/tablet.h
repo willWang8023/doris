@@ -17,57 +17,85 @@
 
 #pragma once
 
+#include <butil/macros.h>
+#include <glog/logging.h>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <limits>
+#include <list>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <set>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
-#include <unordered_set>
+#include <utility>
 #include <vector>
 
-#include "gen_cpp/AgentService_types.h"
-#include "gen_cpp/MasterService_types.h"
-#include "gen_cpp/olap_file.pb.h"
+#include "common/config.h"
+#include "common/status.h"
 #include "olap/base_tablet.h"
-#include "olap/cumulative_compaction_policy.h"
+#include "olap/binlog_config.h"
 #include "olap/data_dir.h"
 #include "olap/olap_common.h"
-#include "olap/olap_define.h"
+#include "olap/partial_update_info.h"
 #include "olap/rowset/rowset.h"
+#include "olap/rowset/rowset_meta.h"
 #include "olap/rowset/rowset_reader.h"
-#include "olap/rowset/rowset_tree.h"
 #include "olap/rowset/segment_v2/segment.h"
-#include "olap/tablet_meta.h"
-#include "olap/tuple.h"
-#include "olap/utils.h"
 #include "olap/version_graph.h"
+#include "segment_loader.h"
+#include "util/metrics.h"
 #include "util/once.h"
+#include "util/slice.h"
 
 namespace doris {
 
-class DataDir;
 class Tablet;
-class TabletMeta;
 class CumulativeCompactionPolicy;
-class CumulativeCompaction;
-class BaseCompaction;
+class Compaction;
+class SingleReplicaCompaction;
 class RowsetWriter;
 struct RowsetWriterContext;
+class RowIdConversion;
+class TTabletInfo;
+class TabletMetaPB;
+class TupleDescriptor;
+class CalcDeleteBitmapToken;
+enum CompressKind : int;
+class RowsetBinlogMetasPB;
+struct TabletTxnInfo;
 
-using TabletSharedPtr = std::shared_ptr<Tablet>;
+namespace io {
+class RemoteFileSystem;
+} // namespace io
+namespace vectorized {
+class Block;
+} // namespace vectorized
+struct RowLocation;
+enum KeysType : int;
+enum SortType : int;
 
 enum TabletStorageType { STORAGE_TYPE_LOCAL, STORAGE_TYPE_REMOTE, STORAGE_TYPE_REMOTE_AND_LOCAL };
 
-class Tablet : public BaseTablet {
+static inline constexpr auto TRACE_TABLET_LOCK_THRESHOLD = std::chrono::seconds(1);
+
+class Tablet final : public BaseTablet {
 public:
-    static TabletSharedPtr create_tablet_from_meta(TabletMetaSharedPtr tablet_meta,
-                                                   DataDir* data_dir = nullptr);
+    Tablet(StorageEngine& engine, TabletMetaSharedPtr tablet_meta, DataDir* data_dir,
+           const std::string_view& cumulative_compaction_type = "");
 
-    Tablet(TabletMetaSharedPtr tablet_meta, DataDir* data_dir,
-           const std::string& cumulative_compaction_type = "");
+    DataDir* data_dir() const { return _data_dir; }
+    int64_t replica_id() const { return _tablet_meta->replica_id(); }
+    TabletUid tablet_uid() const { return _tablet_meta->tablet_uid(); }
 
+    bool set_tablet_schema_into_rowset_meta();
     Status init();
     bool init_succeeded();
 
@@ -78,16 +106,17 @@ public:
 
     void save_meta();
     // Used in clone task, to update local meta when finishing a clone job
-    Status revise_tablet_meta(const std::vector<RowsetMetaSharedPtr>& rowsets_to_clone,
-                              const std::vector<Version>& versions_to_delete);
-    Status pick_quick_compaction_rowsets(std::vector<RowsetSharedPtr>* input_rowsets,
-                                         int64_t* permits);
+    Status revise_tablet_meta(const std::vector<RowsetSharedPtr>& to_add,
+                              const std::vector<RowsetSharedPtr>& to_delete,
+                              bool is_incremental_clone);
 
-    const int64_t cumulative_layer_point() const;
+    int64_t cumulative_layer_point() const;
     void set_cumulative_layer_point(int64_t new_point);
+    inline int64_t cumulative_promotion_size() const;
+    inline void set_cumulative_promotion_size(int64_t new_size);
 
     // Disk space occupied by tablet, contain local and remote.
-    size_t tablet_footprint();
+    size_t tablet_footprint() override;
     // Local disk space occupied by tablet.
     size_t tablet_local_size();
     // Remote disk space occupied by tablet.
@@ -95,18 +124,16 @@ public:
 
     size_t num_rows();
     int version_count() const;
+    bool exceed_version_limit(int32_t limit) override;
+    uint64_t segment_count() const;
     Version max_version() const;
-    Version max_version_unlocked() const;
     CumulativeCompactionPolicy* cumulative_compaction_policy();
-    bool enable_unique_key_merge_on_write() const;
 
     // properties encapsulated in TabletSchema
-    KeysType keys_type() const;
     SortType sort_type() const;
     size_t sort_col_num() const;
     size_t num_columns() const;
     size_t num_null_columns() const;
-    size_t num_key_columns() const;
     size_t num_short_key_columns() const;
     size_t num_rows_per_row_block() const;
     CompressKind compress_kind() const;
@@ -117,19 +144,10 @@ public:
     // operation in rowsets
     Status add_rowset(RowsetSharedPtr rowset);
     Status create_initial_rowset(const int64_t version);
+
+    // MUST hold EXCLUSIVE `_meta_lock`.
     Status modify_rowsets(std::vector<RowsetSharedPtr>& to_add,
                           std::vector<RowsetSharedPtr>& to_delete, bool check_delete = false);
-
-    // _rs_version_map and _stale_rs_version_map should be protected by _meta_lock
-    // The caller must call hold _meta_lock when call this two function.
-    const RowsetSharedPtr get_rowset_by_version(const Version& version,
-                                                bool find_is_stale = false) const;
-    const RowsetSharedPtr get_stale_rowset_by_version(const Version& version) const;
-
-    const RowsetSharedPtr rowset_with_max_version() const;
-
-    static RowsetMetaSharedPtr rowset_meta_with_max_schema_version(
-            const std::vector<RowsetMetaSharedPtr>& rowset_metas);
 
     Status add_inc_rowset(const RowsetSharedPtr& rowset);
     /// Delete stale rowset by timing. This delete policy uses now() minutes
@@ -140,27 +158,22 @@ public:
 
     // Given spec_version, find a continuous version path and store it in version_path.
     // If quiet is true, then only "does this path exist" is returned.
-    Status capture_consistent_versions(const Version& spec_version,
-                                       std::vector<Version>* version_path,
-                                       bool quiet = false) const;
+    // If skip_missing_version is true, return ok even there are missing versions.
+    Status capture_consistent_versions_unlocked(const Version& spec_version, Versions* version_path,
+                                                bool skip_missing_version, bool quiet) const;
+
     // if quiet is true, no error log will be printed if there are missing versions
     Status check_version_integrity(const Version& version, bool quiet = false);
     bool check_version_exist(const Version& version) const;
     void acquire_version_and_rowsets(
             std::vector<std::pair<Version, RowsetSharedPtr>>* version_rowsets) const;
 
-    Status capture_consistent_rowsets(const Version& spec_version,
-                                      std::vector<RowsetSharedPtr>* rowsets) const;
-    Status capture_rs_readers(const Version& spec_version,
-                              std::vector<RowsetReaderSharedPtr>* rs_readers) const;
+    Status capture_consistent_rowsets_unlocked(
+            const Version& spec_version, std::vector<RowsetSharedPtr>* rowsets) const override;
 
-    Status capture_rs_readers(const std::vector<Version>& version_path,
-                              std::vector<RowsetReaderSharedPtr>* rs_readers) const;
-
-    const std::vector<RowsetMetaSharedPtr> delete_predicates() {
-        return _tablet_meta->delete_predicates();
-    }
-    bool version_for_delete_predicate(const Version& version);
+    // If skip_missing_version is true, skip versions if they are missing.
+    Status capture_rs_readers(const Version& spec_version, std::vector<RowSetSplits>* rs_splits,
+                              bool skip_missing_version) override;
 
     // meta lock
     std::shared_mutex& get_header_lock() { return _meta_lock; }
@@ -169,9 +182,11 @@ public:
     std::mutex& get_base_compaction_lock() { return _base_compaction_lock; }
     std::mutex& get_cumulative_compaction_lock() { return _cumulative_compaction_lock; }
 
-    std::shared_mutex& get_migration_lock() { return _migration_lock; }
+    std::shared_timed_mutex& get_migration_lock() { return _migration_lock; }
 
     std::mutex& get_schema_change_lock() { return _schema_change_lock; }
+
+    std::mutex& get_build_inverted_index_lock() { return _build_inverted_index_lock; }
 
     // operation for compaction
     bool can_do_compaction(size_t path_hash, CompactionType compaction_type);
@@ -179,19 +194,10 @@ public:
             CompactionType compaction_type,
             std::shared_ptr<CumulativeCompactionPolicy> cumulative_compaction_policy);
 
-    // operation for clone
-    void calc_missed_versions(int64_t spec_version, std::vector<Version>* missed_versions);
-    void calc_missed_versions_unlocked(int64_t spec_version,
-                                       std::vector<Version>* missed_versions) const;
-
     // This function to find max continuous version from the beginning.
     // For example: If there are 1, 2, 3, 5, 6, 7 versions belongs tablet, then 3 is target.
     // 3 will be saved in "version", and 7 will be saved in "max_version", if max_version != nullptr
     void max_continuous_version_from_beginning(Version* version, Version* max_version = nullptr);
-
-    // operation for query
-    Status split_range(const OlapTuple& start_key_strings, const OlapTuple& end_key_strings,
-                       uint64_t request_block_row_count, std::vector<OlapTuple>* ranges);
 
     void set_bad(bool is_bad) { _is_bad = is_bad; }
 
@@ -205,13 +211,14 @@ public:
         _last_base_compaction_failure_millis = millis;
     }
 
+    int64_t last_full_compaction_failure_time() { return _last_full_compaction_failure_millis; }
+    void set_last_full_compaction_failure_time(int64_t millis) {
+        _last_full_compaction_failure_millis = millis;
+    }
+
     int64_t last_cumu_compaction_success_time() { return _last_cumu_compaction_success_millis; }
     void set_last_cumu_compaction_success_time(int64_t millis) {
         _last_cumu_compaction_success_millis = millis;
-    }
-
-    void set_last_quick_compaction_success_time(int64_t millis) {
-        _last_quick_compaction_success_time_millis = millis;
     }
 
     int64_t last_base_compaction_success_time() { return _last_base_compaction_success_millis; }
@@ -219,30 +226,38 @@ public:
         _last_base_compaction_success_millis = millis;
     }
 
+    int64_t last_full_compaction_success_time() { return _last_full_compaction_success_millis; }
+    void set_last_full_compaction_success_time(int64_t millis) {
+        _last_full_compaction_success_millis = millis;
+    }
+
+    int64_t last_base_compaction_schedule_time() { return _last_base_compaction_schedule_millis; }
+    void set_last_base_compaction_schedule_time(int64_t millis) {
+        _last_base_compaction_schedule_millis = millis;
+    }
+
     void delete_all_files();
 
-    bool check_path(const std::string& check_path) const;
-    bool check_rowset_id(const RowsetId& rowset_id);
+    void check_tablet_path_exists();
 
-    Status set_partition_id(int64_t partition_id);
+    bool check_path(const std::string& check_path) const;
 
     TabletInfo get_tablet_info() const;
 
-    void pick_candidate_rowsets_to_cumulative_compaction(
-            std::vector<RowsetSharedPtr>* candidate_rowsets,
-            std::shared_lock<std::shared_mutex>& /* meta lock*/);
-    void pick_candidate_rowsets_to_base_compaction(
-            std::vector<RowsetSharedPtr>* candidate_rowsets,
-            std::shared_lock<std::shared_mutex>& /* meta lock*/);
+    std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_cumulative_compaction();
+    std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_base_compaction();
+    std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_full_compaction();
+    std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_build_inverted_index(
+            const std::set<int32_t>& alter_index_uids, bool is_drop_op);
+
+    std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_single_replica_compaction();
+    std::vector<Version> get_all_versions();
+
+    std::vector<RowsetSharedPtr> pick_first_consecutive_empty_rowsets(int limit);
 
     void calculate_cumulative_point();
     // TODO(ygl):
     bool is_primary_replica() { return false; }
-
-    // TODO(ygl):
-    // eco mode means power saving in new energy car
-    // eco mode also means save money in palo
-    bool in_eco_mode() { return false; }
 
     // return true if the checkpoint is actually done
     bool do_tablet_meta_checkpoint();
@@ -254,24 +269,19 @@ public:
     bool rowset_meta_is_useful(RowsetMetaSharedPtr rowset_meta);
 
     void build_tablet_report_info(TTabletInfo* tablet_info,
-                                  bool enable_consecutive_missing_check = false);
-
-    void generate_tablet_meta_copy(TabletMetaSharedPtr new_tablet_meta) const;
-    // caller should hold the _meta_lock before calling this method
-    void generate_tablet_meta_copy_unlocked(TabletMetaSharedPtr new_tablet_meta) const;
+                                  bool enable_consecutive_missing_check = false,
+                                  bool enable_path_check = false);
 
     // return a json string to show the compaction status of this tablet
     void get_compaction_status(std::string* json_result);
 
-    double calculate_scan_frequency();
+    static Status prepare_compaction_and_calculate_permits(CompactionType compaction_type,
+                                                           const TabletSharedPtr& tablet,
+                                                           std::shared_ptr<Compaction>& compaction,
+                                                           int64_t& permits);
 
-    Status prepare_compaction_and_calculate_permits(CompactionType compaction_type,
-                                                    TabletSharedPtr tablet, int64_t* permits);
-    void execute_compaction(CompactionType compaction_type);
-    void reset_compaction(CompactionType compaction_type);
-
-    void set_clone_occurred(bool clone_occurred) { _is_clone_occurred = clone_occurred; }
-    bool get_clone_occurred() { return _is_clone_occurred; }
+    void execute_compaction(Compaction& compaction);
+    void execute_single_replica_compaction(SingleReplicaCompaction& compaction);
 
     void set_cumulative_compaction_policy(
             std::shared_ptr<CumulativeCompactionPolicy> cumulative_compaction_policy) {
@@ -282,79 +292,173 @@ public:
         return _cumulative_compaction_policy;
     }
 
+    void set_last_base_compaction_status(std::string status) {
+        _last_base_compaction_status = std::move(status);
+    }
+
+    std::string get_last_base_compaction_status() { return _last_base_compaction_status; }
+
     inline bool all_beta() const {
         std::shared_lock rdlock(_meta_lock);
         return _tablet_meta->all_beta();
     }
 
-    TabletSchemaSPtr tablet_schema() const override;
+    const TabletSchemaSPtr& tablet_schema_unlocked() const { return _max_version_schema; }
 
-    TabletSchemaSPtr get_max_version_schema(std::lock_guard<std::shared_mutex>&);
+    Result<std::unique_ptr<RowsetWriter>> create_rowset_writer(RowsetWriterContext& context,
+                                                               bool vertical) override;
 
-    // Find the related rowset with specified version and return its tablet schema
-    TabletSchemaSPtr tablet_schema(Version version) const {
-        return _tablet_meta->tablet_schema(version);
-    }
+    Result<std::unique_ptr<RowsetWriter>> create_transient_rowset_writer(
+            const Rowset& rowset, std::shared_ptr<PartialUpdateInfo> partial_update_info);
+    Result<std::unique_ptr<RowsetWriter>> create_transient_rowset_writer(
+            RowsetWriterContext& context, const RowsetId& rowset_id);
 
-    Status create_rowset_writer(const Version& version, const RowsetStatePB& rowset_state,
-                                const SegmentsOverlapPB& overlap, TabletSchemaSPtr tablet_schema,
-                                int64_t oldest_write_timestamp, int64_t newest_write_timestamp,
-                                std::unique_ptr<RowsetWriter>* rowset_writer);
+    Status create_rowset(const RowsetMetaSharedPtr& rowset_meta, RowsetSharedPtr* rowset);
 
-    Status create_rowset_writer(const int64_t& txn_id, const PUniqueId& load_id,
-                                const RowsetStatePB& rowset_state, const SegmentsOverlapPB& overlap,
-                                TabletSchemaSPtr tablet_schema,
-                                std::unique_ptr<RowsetWriter>* rowset_writer);
+    // MUST hold EXCLUSIVE `_meta_lock`
+    void add_rowsets(const std::vector<RowsetSharedPtr>& to_add);
+    // MUST hold EXCLUSIVE `_meta_lock`
+    void delete_rowsets(const std::vector<RowsetSharedPtr>& to_delete, bool move_to_stale);
 
-    Status create_rowset(RowsetMetaSharedPtr rowset_meta, RowsetSharedPtr* rowset);
+    // MUST hold SHARED `_meta_lock`
+    const auto& rowset_map() const { return _rs_version_map; }
+    // MUST hold SHARED `_meta_lock`
+    const auto& stale_rowset_map() const { return _stale_rs_version_map; }
+
+    ////////////////////////////////////////////////////////////////////////////
+    // begin cooldown functions
+    ////////////////////////////////////////////////////////////////////////////
+    int64_t storage_policy_id() const { return _tablet_meta->storage_policy_id(); }
+    void set_storage_policy_id(int64_t id) { _tablet_meta->set_storage_policy_id(id); }
+
+    int64_t last_failed_follow_cooldown_time() const { return _last_failed_follow_cooldown_time; }
+
     // Cooldown to remote fs.
-    Status cooldown();
+    Status cooldown(RowsetSharedPtr rowset = nullptr);
 
     RowsetSharedPtr pick_cooldown_rowset();
 
-    bool need_cooldown(int64_t* cooldown_timestamp, size_t* file_size);
+    RowsetSharedPtr need_cooldown(int64_t* cooldown_timestamp, size_t* file_size);
+
+    struct CooldownConf {
+        int64_t term = -1;
+        int64_t cooldown_replica_id = -1;
+    };
+
+    CooldownConf cooldown_conf() const {
+        std::shared_lock rlock(_cooldown_conf_lock);
+        return _cooldown_conf;
+    }
+
+    CooldownConf cooldown_conf_unlocked() const { return _cooldown_conf; }
+
+    // Return `true` if update success
+    bool update_cooldown_conf(int64_t cooldown_term, int64_t cooldown_replica_id);
 
     Status remove_all_remote_rowsets();
 
-    // Lookup the row location of `encoded_key`, the function sets `row_location` on success.
-    // NOTE: the method only works in unique key model with primary key index, you will got a
-    //       not supported error in other data model.
-    Status lookup_row_key(const Slice& encoded_key, const RowsetIdUnorderedSet* rowset_ids,
-                          RowLocation* row_location, uint32_t version);
-
-    // calc delete bitmap when flush memtable, use a fake version to calc
-    // For example, cur max version is 5, and we use version 6 to calc but
-    // finally this rowset publish version with 8, we should make up data
-    // for rowset 6-7. Also, if a compaction happens between commit_txn and
-    // publish_txn, we should remove compaction input rowsets' delete_bitmap
-    // and build newly generated rowset's delete_bitmap
-    Status calc_delete_bitmap(RowsetId rowset_id,
-                              const std::vector<segment_v2::SegmentSharedPtr>& segments,
-                              const RowsetIdUnorderedSet* specified_rowset_ids,
-                              DeleteBitmapPtr delete_bitmap, int64_t version,
-                              bool check_pre_segments = false);
-
-    Status update_delete_bitmap_without_lock(const RowsetSharedPtr& rowset);
-    Status update_delete_bitmap(const RowsetSharedPtr& rowset, DeleteBitmapPtr delete_bitmap,
-                                const RowsetIdUnorderedSet& pre_rowset_ids);
-    RowsetIdUnorderedSet all_rs_id() const;
-
-    void remove_self_owned_remote_rowsets();
-
-    // Erase entries in `_self_owned_remote_rowsets` iff they are in `rowsets_in_snapshot`.
-    // REQUIRES: held _meta_lock
-    void update_self_owned_remote_rowsets(const std::vector<RowsetSharedPtr>& rowsets_in_snapshot);
-
-    void record_unused_remote_rowset(const RowsetId& rowset_id, const io::ResourceId& resource,
+    void record_unused_remote_rowset(const RowsetId& rowset_id, const std::string& resource,
                                      int64_t num_segments);
+
+    uint32_t calc_cold_data_compaction_score() const;
+
+    std::mutex& get_cold_compaction_lock() { return _cold_compaction_lock; }
+
+    std::shared_mutex& get_cooldown_conf_lock() { return _cooldown_conf_lock; }
+
+    static void async_write_cooldown_meta(TabletSharedPtr tablet);
+    // Return `ABORTED` if should not to retry again
+    Status write_cooldown_meta();
+    ////////////////////////////////////////////////////////////////////////////
+    // end cooldown functions
+    ////////////////////////////////////////////////////////////////////////////
+
+    static Status update_delete_bitmap(const TabletSharedPtr& self, const TabletTxnInfo* txn_info,
+                                       int64_t txn_id);
+
+    static Status update_delete_bitmap_without_lock(const TabletSharedPtr& self,
+                                                    const RowsetSharedPtr& rowset);
+
+    void calc_compaction_output_rowset_delete_bitmap(
+            const std::vector<RowsetSharedPtr>& input_rowsets,
+            const RowIdConversion& rowid_conversion, uint64_t start_version, uint64_t end_version,
+            std::set<RowLocation>* missed_rows,
+            std::map<RowsetSharedPtr, std::list<std::pair<RowLocation, RowLocation>>>* location_map,
+            const DeleteBitmap& input_delete_bitmap, DeleteBitmap* output_rowset_delete_bitmap);
+    void merge_delete_bitmap(const DeleteBitmap& delete_bitmap);
+    Status check_rowid_conversion(
+            RowsetSharedPtr dst_rowset,
+            const std::map<RowsetSharedPtr, std::list<std::pair<RowLocation, RowLocation>>>&
+                    location_map);
 
     bool check_all_rowset_segment();
 
     void update_max_version_schema(const TabletSchemaSPtr& tablet_schema);
 
+    void set_skip_compaction(bool skip,
+                             CompactionType compaction_type = CompactionType::CUMULATIVE_COMPACTION,
+                             int64_t start = -1);
+    bool should_skip_compaction(CompactionType compaction_type, int64_t now);
+
+    RowsetSharedPtr get_rowset(const RowsetId& rowset_id);
+
+    void traverse_rowsets(std::function<void(const RowsetSharedPtr&)> visitor,
+                          bool include_stale = false) {
+        std::shared_lock rlock(_meta_lock);
+        for (auto& [v, rs] : _rs_version_map) {
+            visitor(rs);
+        }
+        if (!include_stale) return;
+        for (auto& [v, rs] : _stale_rs_version_map) {
+            visitor(rs);
+        }
+    }
+
+    std::vector<std::string> get_binlog_filepath(std::string_view binlog_version) const;
+    std::pair<std::string, int64_t> get_binlog_info(std::string_view binlog_version) const;
+    std::string get_rowset_binlog_meta(std::string_view binlog_version,
+                                       std::string_view rowset_id) const;
+    Status get_rowset_binlog_metas(const std::vector<int64_t>& binlog_versions,
+                                   RowsetBinlogMetasPB* metas_pb);
+    std::string get_segment_filepath(std::string_view rowset_id,
+                                     std::string_view segment_index) const;
+    std::string get_segment_filepath(std::string_view rowset_id, int64_t segment_index) const;
+    bool can_add_binlog(uint64_t total_binlog_size) const;
+    void gc_binlogs(int64_t version);
+    Status ingest_binlog_metas(RowsetBinlogMetasPB* metas_pb);
+
+    inline void report_error(const Status& st) {
+        if (st.is<ErrorCode::IO_ERROR>()) {
+            ++_io_error_times;
+        } else if (st.is<ErrorCode::CORRUPTION>()) {
+            _io_error_times = config::max_tablet_io_errors + 1;
+        }
+    }
+
+    inline int64_t get_io_error_times() const { return _io_error_times; }
+
+    inline bool is_io_error_too_times() const {
+        return config::max_tablet_io_errors > 0 && _io_error_times >= config::max_tablet_io_errors;
+    }
+
+    int64_t get_table_id() { return _tablet_meta->table_id(); }
+
+    // binlog related functions
+    bool is_enable_binlog();
+    bool is_binlog_enabled() { return _tablet_meta->binlog_config().is_enable(); }
+    int64_t binlog_ttl_ms() const { return _tablet_meta->binlog_config().ttl_seconds(); }
+    int64_t binlog_max_bytes() const { return _tablet_meta->binlog_config().max_bytes(); }
+
+    void set_binlog_config(BinlogConfig binlog_config);
+
+    Status check_delete_bitmap_correctness(DeleteBitmapPtr delete_bitmap, int64_t max_version,
+                                           int64_t txn_id, const RowsetIdUnorderedSet& rowset_ids,
+                                           std::vector<RowsetSharedPtr>* rowsets = nullptr);
+    void set_alter_failed(bool alter_failed) { _alter_failed = alter_failed; }
+    bool is_alter_failed() { return _alter_failed; }
+
 private:
     Status _init_once_action();
-    void _print_missed_versions(const std::vector<Version>& missed_versions) const;
     bool _contains_rowset(const RowsetId rowset_id);
     Status _contains_version(const Version& version);
 
@@ -367,31 +471,34 @@ private:
     /// Delete stale rowset by version. This method not only delete the version in expired rowset map,
     /// but also delete the version in rowset meta vector.
     void _delete_stale_rowset_by_version(const Version& version);
-    Status _capture_consistent_rowsets_unlocked(const std::vector<Version>& version_path,
-                                                std::vector<RowsetSharedPtr>* rowsets) const;
 
-    const uint32_t _calc_cumulative_compaction_score(
+    uint32_t _calc_cumulative_compaction_score(
             std::shared_ptr<CumulativeCompactionPolicy> cumulative_compaction_policy);
-    const uint32_t _calc_base_compaction_score() const;
+    uint32_t _calc_base_compaction_score() const;
 
-    // When the proportion of empty edges in the adjacency matrix used to represent the version graph
-    // in the version tracker is greater than the threshold, rebuild the version tracker
-    bool _reconstruct_version_tracker_if_necessary();
     void _init_context_common_fields(RowsetWriterContext& context);
 
-    bool _check_pk_in_pre_segments(const std::vector<segment_v2::SegmentSharedPtr>& pre_segments,
-                                   const Slice& key, const Version& version,
-                                   DeleteBitmapPtr delete_bitmap);
-    void _rowset_ids_difference(const RowsetIdUnorderedSet& cur, const RowsetIdUnorderedSet& pre,
-                                RowsetIdUnorderedSet* to_add, RowsetIdUnorderedSet* to_del);
-    Status _load_rowset_segments(const RowsetSharedPtr& rowset,
-                                 std::vector<segment_v2::SegmentSharedPtr>* segments);
+    ////////////////////////////////////////////////////////////////////////////
+    // begin cooldown functions
+    ////////////////////////////////////////////////////////////////////////////
+    Status _cooldown_data(RowsetSharedPtr rowset);
+    Status _follow_cooldowned_data();
+    Status _read_cooldown_meta(const std::shared_ptr<io::RemoteFileSystem>& fs,
+                               TabletMetaPB* tablet_meta_pb);
+    bool _has_data_to_cooldown();
+    int64_t _get_newest_cooldown_time(const RowsetSharedPtr& rowset);
+    ////////////////////////////////////////////////////////////////////////////
+    // end cooldown functions
+    ////////////////////////////////////////////////////////////////////////////
+
+    void _remove_sentinel_mark_from_delete_bitmap(DeleteBitmapPtr delete_bitmap);
 
 public:
     static const int64_t K_INVALID_CUMULATIVE_POINT = -1;
 
 private:
-    TimestampedVersionTracker _timestamped_version_tracker;
+    StorageEngine& _engine;
+    DataDir* _data_dir = nullptr;
 
     DorisCallOnce<Status> _init_once;
     // meta store lock is used for prevent 2 threads do checkpoint concurrently
@@ -401,11 +508,8 @@ private:
     std::mutex _base_compaction_lock;
     std::mutex _cumulative_compaction_lock;
     std::mutex _schema_change_lock;
-    std::shared_mutex _migration_lock;
-
-    // TODO(lingbin): There is a _meta_lock TabletMeta too, there should be a comment to
-    // explain how these two locks work together.
-    mutable std::shared_mutex _meta_lock;
+    std::shared_timed_mutex _migration_lock;
+    std::mutex _build_inverted_index_lock;
 
     // In unique key table with MoW, we should guarantee that only one
     // writer can update rowset and delete bitmap at the same time.
@@ -413,63 +517,59 @@ private:
     // during publish_txn, which might take hundreds of milliseconds
     mutable std::mutex _rowset_update_lock;
 
-    // After version 0.13, all newly created rowsets are saved in _rs_version_map.
-    // And if rowset being compacted, the old rowsetis will be saved in _stale_rs_version_map;
-    std::unordered_map<Version, RowsetSharedPtr, HashOfVersion> _rs_version_map;
-    // This variable _stale_rs_version_map is used to record these rowsets which are be compacted.
-    // These _stale rowsets are been removed when rowsets' pathVersion is expired,
-    // this policy is judged and computed by TimestampedVersionTracker.
-    std::unordered_map<Version, RowsetSharedPtr, HashOfVersion> _stale_rs_version_map;
-    // RowsetTree is used to locate rowsets containing a key or a key range quickly.
-    // It's only used in UNIQUE_KEYS data model.
-    std::unique_ptr<RowsetTree> _rowset_tree;
     // if this tablet is broken, set to true. default is false
     std::atomic<bool> _is_bad;
     // timestamp of last cumu compaction failure
     std::atomic<int64_t> _last_cumu_compaction_failure_millis;
     // timestamp of last base compaction failure
     std::atomic<int64_t> _last_base_compaction_failure_millis;
+    // timestamp of last full compaction failure
+    std::atomic<int64_t> _last_full_compaction_failure_millis;
     // timestamp of last cumu compaction success
     std::atomic<int64_t> _last_cumu_compaction_success_millis;
     // timestamp of last base compaction success
     std::atomic<int64_t> _last_base_compaction_success_millis;
-    std::atomic<int64_t> _last_quick_compaction_success_time_millis;
+    // timestamp of last full compaction success
+    std::atomic<int64_t> _last_full_compaction_success_millis;
+    // timestamp of last base compaction schedule time
+    std::atomic<int64_t> _last_base_compaction_schedule_millis;
     std::atomic<int64_t> _cumulative_point;
+    std::atomic<int64_t> _cumulative_promotion_size;
     std::atomic<int32_t> _newly_created_rowset_num;
     std::atomic<int64_t> _last_checkpoint_time;
+    std::string _last_base_compaction_status;
 
     // cumulative compaction policy
     std::shared_ptr<CumulativeCompactionPolicy> _cumulative_compaction_policy;
-    std::string _cumulative_compaction_type;
+    std::string_view _cumulative_compaction_type;
 
-    // the value of metric 'query_scan_count' and timestamp will be recorded when every time
-    // 'config::tablet_scan_frequency_time_node_interval_second' passed to calculate tablet
-    // scan frequency.
-    // the value of metric 'query_scan_count' for the last record.
-    int64_t _last_record_scan_count;
-    // the timestamp of the last record.
-    time_t _last_record_scan_count_timestamp;
-
-    std::shared_ptr<CumulativeCompaction> _cumulative_compaction;
-    std::shared_ptr<BaseCompaction> _base_compaction;
-    // whether clone task occurred during the tablet is in thread pool queue to wait for compaction
-    std::atomic<bool> _is_clone_occurred;
+    // use a seperate thread to check all tablets paths existance
+    std::atomic<bool> _is_tablet_path_exists;
 
     int64_t _last_missed_version;
     int64_t _last_missed_time_s;
 
-    // Remote rowsets not shared by other BE. We can delete them when drop tablet.
-    std::unordered_set<RowsetSharedPtr> _self_owned_remote_rowsets; // guarded by _meta_lock
+    bool _skip_cumu_compaction = false;
+    int64_t _skip_cumu_compaction_ts;
 
-    // Max schema_version schema from Rowset or FE
-    TabletSchemaSPtr _max_version_schema;
+    bool _skip_base_compaction = false;
+    int64_t _skip_base_compaction_ts;
 
-    DISALLOW_COPY_AND_ASSIGN(Tablet);
+    // cooldown related
+    CooldownConf _cooldown_conf;
+    // `_cooldown_conf_lock` is used to serialize update cooldown conf and all operations that:
+    // 1. read cooldown conf
+    // 2. upload rowsets to remote storage
+    // 3. update cooldown meta id
+    mutable std::shared_mutex _cooldown_conf_lock;
+    // `_cold_compaction_lock` is used to serialize cold data compaction and all operations that
+    // may delete compaction input rowsets.
+    std::mutex _cold_compaction_lock;
+    int64_t _last_failed_follow_cooldown_time = 0;
+    // `_alter_failed` is used to indicate whether the tablet failed to perform a schema change
+    std::atomic<bool> _alter_failed = false;
 
-public:
-    IntCounter* flush_bytes;
-    IntCounter* flush_finish_count;
-    std::atomic<int64_t> publised_count = 0;
+    int64_t _io_error_times = 0;
 };
 
 inline CumulativeCompactionPolicy* Tablet::cumulative_compaction_policy() {
@@ -492,7 +592,7 @@ inline void Tablet::deregister_tablet_from_dir() {
     _data_dir->deregister_tablet(this);
 }
 
-inline const int64_t Tablet::cumulative_layer_point() const {
+inline int64_t Tablet::cumulative_layer_point() const {
     return _cumulative_point;
 }
 
@@ -504,13 +604,12 @@ inline void Tablet::set_cumulative_layer_point(int64_t new_point) {
     _cumulative_point = new_point;
 }
 
-inline bool Tablet::enable_unique_key_merge_on_write() const {
-#ifdef BE_TEST
-    if (_tablet_meta == nullptr) {
-        return false;
-    }
-#endif
-    return _tablet_meta->enable_unique_key_merge_on_write();
+inline int64_t Tablet::cumulative_promotion_size() const {
+    return _cumulative_promotion_size;
+}
+
+inline void Tablet::set_cumulative_promotion_size(int64_t new_size) {
+    _cumulative_promotion_size = new_size;
 }
 
 // TODO(lingbin): Why other methods that need to get information from _tablet_meta
@@ -538,63 +637,62 @@ inline size_t Tablet::num_rows() {
 }
 
 inline int Tablet::version_count() const {
+    std::shared_lock rdlock(_meta_lock);
     return _tablet_meta->version_count();
 }
 
 inline Version Tablet::max_version() const {
+    std::shared_lock rdlock(_meta_lock);
     return _tablet_meta->max_version();
 }
 
-inline Version Tablet::max_version_unlocked() const {
-    return _tablet_meta->max_version();
-}
-
-inline KeysType Tablet::keys_type() const {
-    return _schema->keys_type();
+inline uint64_t Tablet::segment_count() const {
+    std::shared_lock rdlock(_meta_lock);
+    uint64_t segment_nums = 0;
+    for (const auto& rs_meta : _tablet_meta->all_rs_metas()) {
+        segment_nums += rs_meta->num_segments();
+    }
+    return segment_nums;
 }
 
 inline SortType Tablet::sort_type() const {
-    return _schema->sort_type();
+    return _tablet_meta->tablet_schema()->sort_type();
 }
 
 inline size_t Tablet::sort_col_num() const {
-    return _schema->sort_col_num();
+    return _tablet_meta->tablet_schema()->sort_col_num();
 }
 
 inline size_t Tablet::num_columns() const {
-    return _schema->num_columns();
+    return _tablet_meta->tablet_schema()->num_columns();
 }
 
 inline size_t Tablet::num_null_columns() const {
-    return _schema->num_null_columns();
-}
-
-inline size_t Tablet::num_key_columns() const {
-    return _schema->num_key_columns();
+    return _tablet_meta->tablet_schema()->num_null_columns();
 }
 
 inline size_t Tablet::num_short_key_columns() const {
-    return _schema->num_short_key_columns();
+    return _tablet_meta->tablet_schema()->num_short_key_columns();
 }
 
 inline size_t Tablet::num_rows_per_row_block() const {
-    return _schema->num_rows_per_row_block();
+    return _tablet_meta->tablet_schema()->num_rows_per_row_block();
 }
 
 inline CompressKind Tablet::compress_kind() const {
-    return _schema->compress_kind();
+    return _tablet_meta->tablet_schema()->compress_kind();
 }
 
 inline double Tablet::bloom_filter_fpp() const {
-    return _schema->bloom_filter_fpp();
+    return _tablet_meta->tablet_schema()->bloom_filter_fpp();
 }
 
 inline size_t Tablet::next_unique_id() const {
-    return _schema->next_column_unique_id();
+    return _tablet_meta->tablet_schema()->next_column_unique_id();
 }
 
 inline size_t Tablet::row_size() const {
-    return _schema->row_size();
+    return _tablet_meta->tablet_schema()->row_size();
 }
 
 } // namespace doris

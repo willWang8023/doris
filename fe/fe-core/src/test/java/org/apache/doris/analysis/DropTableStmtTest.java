@@ -20,8 +20,8 @@ package org.apache.doris.analysis;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.UserException;
 import org.apache.doris.datasource.InternalCatalog;
+import org.apache.doris.mysql.privilege.AccessControllerManager;
 import org.apache.doris.mysql.privilege.MockedAuth;
-import org.apache.doris.mysql.privilege.PaloAuth;
 import org.apache.doris.qe.ConnectContext;
 
 import mockit.Expectations;
@@ -40,7 +40,7 @@ public class DropTableStmtTest {
     private Analyzer noDbAnalyzer;
 
     @Mocked
-    private PaloAuth auth;
+    private AccessControllerManager accessManager;
     @Mocked
     private ConnectContext ctx;
 
@@ -59,14 +59,10 @@ public class DropTableStmtTest {
                 noDbAnalyzer.getDefaultDb();
                 minTimes = 0;
                 result = "";
-
-                noDbAnalyzer.getClusterName();
-                minTimes = 0;
-                result = "testCluster";
             }
         };
 
-        MockedAuth.mockedAuth(auth);
+        MockedAuth.mockedAccess(accessManager);
         MockedAuth.mockedConnectContext(ctx, "root", "192.168.1.1");
     }
 
@@ -74,18 +70,18 @@ public class DropTableStmtTest {
     public void testNormal() throws UserException, AnalysisException {
         DropTableStmt stmt = new DropTableStmt(false, tbl, true);
         stmt.analyze(analyzer);
-        Assert.assertEquals("testCluster:db1", stmt.getDbName());
+        Assert.assertEquals("db1", stmt.getDbName());
         Assert.assertEquals("table1", stmt.getTableName());
-        Assert.assertEquals("DROP TABLE `testCluster:db1`.`table1`", stmt.toString());
+        Assert.assertEquals("DROP TABLE `db1`.`table1`", stmt.toString());
     }
 
     @Test
     public void testDefaultNormal() throws UserException, AnalysisException {
         DropTableStmt stmt = new DropTableStmt(false, noDbTbl, true);
         stmt.analyze(analyzer);
-        Assert.assertEquals("testCluster:testDb", stmt.getDbName());
+        Assert.assertEquals("testDb", stmt.getDbName());
         Assert.assertEquals("table1", stmt.getTableName());
-        Assert.assertEquals("DROP TABLE `testCluster:testDb`.`table1`", stmt.toSql());
+        Assert.assertEquals("DROP TABLE `testDb`.`table1`", stmt.toSql());
     }
 
     @Test(expected = AnalysisException.class)

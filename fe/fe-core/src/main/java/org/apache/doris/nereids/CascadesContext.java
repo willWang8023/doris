@@ -17,47 +17,108 @@
 
 package org.apache.doris.nereids;
 
-import org.apache.doris.nereids.analyzer.NereidsAnalyzer;
+import org.apache.doris.catalog.DatabaseIf;
+import org.apache.doris.catalog.Env;
+import org.apache.doris.catalog.TableIf;
+import org.apache.doris.common.Pair;
+import org.apache.doris.datasource.CatalogIf;
+import org.apache.doris.nereids.analyzer.Scope;
+import org.apache.doris.nereids.analyzer.UnboundOneRowRelation;
+import org.apache.doris.nereids.analyzer.UnboundRelation;
+import org.apache.doris.nereids.analyzer.UnboundTableSink;
+import org.apache.doris.nereids.exceptions.AnalysisException;
+import org.apache.doris.nereids.hint.Hint;
 import org.apache.doris.nereids.jobs.Job;
 import org.apache.doris.nereids.jobs.JobContext;
+import org.apache.doris.nereids.jobs.executor.Analyzer;
 import org.apache.doris.nereids.jobs.rewrite.RewriteBottomUpJob;
 import org.apache.doris.nereids.jobs.rewrite.RewriteTopDownJob;
 import org.apache.doris.nereids.jobs.scheduler.JobPool;
 import org.apache.doris.nereids.jobs.scheduler.JobScheduler;
 import org.apache.doris.nereids.jobs.scheduler.JobStack;
+import org.apache.doris.nereids.jobs.scheduler.ScheduleContext;
 import org.apache.doris.nereids.jobs.scheduler.SimpleJobScheduler;
+import org.apache.doris.nereids.memo.Group;
 import org.apache.doris.nereids.memo.Memo;
 import org.apache.doris.nereids.processor.post.RuntimeFilterContext;
 import org.apache.doris.nereids.properties.PhysicalProperties;
-import org.apache.doris.nereids.rules.Rule;
 import org.apache.doris.nereids.rules.RuleFactory;
 import org.apache.doris.nereids.rules.RuleSet;
-import org.apache.doris.nereids.rules.analysis.Scope;
+import org.apache.doris.nereids.rules.analysis.BindRelation.CustomTableResolver;
+import org.apache.doris.nereids.rules.exploration.mv.MaterializationContext;
+import org.apache.doris.nereids.trees.expressions.CTEId;
+import org.apache.doris.nereids.trees.expressions.Expression;
+import org.apache.doris.nereids.trees.expressions.NamedExpression;
+import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.SubqueryExpr;
 import org.apache.doris.nereids.trees.plans.Plan;
+import org.apache.doris.nereids.trees.plans.RelationId;
+import org.apache.doris.nereids.trees.plans.logical.LogicalCTE;
+import org.apache.doris.nereids.trees.plans.logical.LogicalCTEConsumer;
+import org.apache.doris.nereids.trees.plans.logical.LogicalFilter;
+import org.apache.doris.nereids.trees.plans.logical.LogicalHaving;
+import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
+import org.apache.doris.nereids.trees.plans.logical.LogicalProject;
+import org.apache.doris.nereids.trees.plans.logical.LogicalSubQueryAlias;
 import org.apache.doris.qe.ConnectContext;
+import org.apache.doris.qe.SessionVariable;
+import org.apache.doris.statistics.ColumnStatistic;
+import org.apache.doris.statistics.Statistics;
+import org.apache.doris.statistics.StatisticsBuilder;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.Stack;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 
 /**
  * Context used in memo.
  */
-public class CascadesContext {
-    private final Memo memo;
+public class CascadesContext implements ScheduleContext {
+
+    // in analyze/rewrite stage, the plan will storage in this field
+    private Plan plan;
+    // in optimize stage, the plan will storage in the memo
+    private Memo memo;
     private final StatementContext statementContext;
-    private RuleSet ruleSet;
-    private JobPool jobPool;
+
+    private final CTEContext cteContext;
+    private final RuleSet ruleSet;
+    private final JobPool jobPool;
     private final JobScheduler jobScheduler;
     private JobContext currentJobContext;
     // subqueryExprIsAnalyzed: whether the subquery has been analyzed.
-    private Map<SubqueryExpr, Boolean> subqueryExprIsAnalyzed;
+    private final Map<SubqueryExpr, Boolean> subqueryExprIsAnalyzed;
+    private final RuntimeFilterContext runtimeFilterContext;
+    private Optional<Scope> outerScope = Optional.empty();
+    private Map<Long, TableIf> tables = null;
 
-    private RuntimeFilterContext runtimeFilterContext;
+    private boolean isRewriteRoot;
+    private volatile boolean isTimeout = false;
+
+    // current process subtree, represent outer plan if empty
+    private final Optional<CTEId> currentTree;
+    private final Optional<CascadesContext> parent;
+
+    private final List<MaterializationContext> materializationContexts;
+    private boolean isLeadingJoin = false;
+
+    private final Map<String, Hint> hintMap = Maps.newLinkedHashMap();
 
     /**
      * Constructor of OptimizerContext.
@@ -65,35 +126,118 @@ public class CascadesContext {
      * @param memo {@link Memo} reference
      * @param statementContext {@link StatementContext} reference
      */
-    public CascadesContext(Memo memo, StatementContext statementContext) {
+    private CascadesContext(Optional<CascadesContext> parent, Optional<CTEId> currentTree,
+            StatementContext statementContext, Plan plan, Memo memo,
+            CTEContext cteContext, PhysicalProperties requireProperties) {
+        this.parent = Objects.requireNonNull(parent, "parent should not null");
+        this.currentTree = Objects.requireNonNull(currentTree, "currentTree should not null");
+        this.statementContext = Objects.requireNonNull(statementContext, "statementContext should not null");
+        this.plan = Objects.requireNonNull(plan, "plan should not null");
         this.memo = memo;
-        this.statementContext = statementContext;
+        this.cteContext = Objects.requireNonNull(cteContext, "cteContext should not null");
         this.ruleSet = new RuleSet();
         this.jobPool = new JobStack();
         this.jobScheduler = new SimpleJobScheduler();
-        this.currentJobContext = new JobContext(this, PhysicalProperties.ANY, Double.MAX_VALUE);
+        this.currentJobContext = new JobContext(this, requireProperties, Double.MAX_VALUE);
         this.subqueryExprIsAnalyzed = new HashMap<>();
         this.runtimeFilterContext = new RuntimeFilterContext(getConnectContext().getSessionVariable());
+        this.materializationContexts = new ArrayList<>();
     }
 
-    public static CascadesContext newContext(StatementContext statementContext, Plan initPlan) {
-        return new CascadesContext(new Memo(initPlan), statementContext);
+    /**
+     * init a brand-new context to process whole tree
+     */
+    public static CascadesContext initContext(StatementContext statementContext,
+            Plan initPlan, PhysicalProperties requireProperties) {
+        return newContext(Optional.empty(), Optional.empty(), statementContext,
+                initPlan, new CTEContext(), requireProperties);
     }
 
-    public NereidsAnalyzer newAnalyzer() {
-        return new NereidsAnalyzer(this);
+    /**
+     * use for analyze cte. we must pass CteContext from outer since we need to get right scope of cte
+     */
+    public static CascadesContext newContextWithCteContext(CascadesContext cascadesContext,
+            Plan initPlan, CTEContext cteContext) {
+        return newContext(Optional.of(cascadesContext), Optional.empty(),
+                cascadesContext.getStatementContext(), initPlan, cteContext, PhysicalProperties.ANY);
     }
 
-    public NereidsAnalyzer newAnalyzer(Optional<Scope> outerScope) {
-        return new NereidsAnalyzer(this, outerScope);
+    public static CascadesContext newCurrentTreeContext(CascadesContext context) {
+        return CascadesContext.newContext(context.getParent(), context.getCurrentTree(), context.getStatementContext(),
+                context.getRewritePlan(), context.getCteContext(),
+                context.getCurrentJobContext().getRequiredProperties());
     }
 
+    /**
+     * New rewrite context copy from current context, used in cbo rewriter.
+     */
+    public static CascadesContext newSubtreeContext(Optional<CTEId> subtree, CascadesContext context,
+            Plan plan, PhysicalProperties requireProperties) {
+        return CascadesContext.newContext(Optional.of(context), subtree, context.getStatementContext(),
+                plan, context.getCteContext(), requireProperties);
+    }
+
+    private static CascadesContext newContext(Optional<CascadesContext> parent, Optional<CTEId> subtree,
+            StatementContext statementContext, Plan initPlan,
+            CTEContext cteContext, PhysicalProperties requireProperties) {
+        return new CascadesContext(parent, subtree, statementContext, initPlan, null, cteContext, requireProperties);
+    }
+
+    public CascadesContext getRoot() {
+        CascadesContext root = this;
+        while (root.getParent().isPresent()) {
+            root = root.getParent().get();
+        }
+        return root;
+    }
+
+    public Optional<CascadesContext> getParent() {
+        return parent;
+    }
+
+    public Optional<CTEId> getCurrentTree() {
+        return currentTree;
+    }
+
+    public synchronized void setIsTimeout(boolean isTimeout) {
+        this.isTimeout = isTimeout;
+    }
+
+    public synchronized boolean isTimeout() {
+        return isTimeout;
+    }
+
+    public void toMemo() {
+        this.memo = new Memo(getConnectContext(), plan);
+    }
+
+    public Analyzer newAnalyzer() {
+        return newAnalyzer(false);
+    }
+
+    public Analyzer newAnalyzer(boolean analyzeView) {
+        return new Analyzer(this, analyzeView);
+    }
+
+    public Analyzer newAnalyzer(boolean analyzeView, Optional<CustomTableResolver> customTableResolver) {
+        return new Analyzer(this, analyzeView, customTableResolver);
+    }
+
+    public Analyzer newAnalyzer(Optional<CustomTableResolver> customTableResolver) {
+        return newAnalyzer(false, customTableResolver);
+    }
+
+    @Override
     public void pushJob(Job job) {
         jobPool.push(job);
     }
 
     public Memo getMemo() {
         return memo;
+    }
+
+    public void setTables(List<TableIf> tables) {
+        this.tables = tables.stream().collect(Collectors.toMap(TableIf::getId, t -> t, (t1, t2) -> t1));
     }
 
     public ConnectContext getConnectContext() {
@@ -108,16 +252,9 @@ public class CascadesContext {
         return ruleSet;
     }
 
-    public void setRuleSet(RuleSet ruleSet) {
-        this.ruleSet = ruleSet;
-    }
-
+    @Override
     public JobPool getJobPool() {
         return jobPool;
-    }
-
-    public void setJobPool(JobPool jobPool) {
-        this.jobPool = jobPool;
     }
 
     public JobScheduler getJobScheduler() {
@@ -141,6 +278,14 @@ public class CascadesContext {
         return this;
     }
 
+    public Plan getRewritePlan() {
+        return plan;
+    }
+
+    public void setRewritePlan(Plan plan) {
+        this.plan = plan;
+    }
+
     public void setSubqueryExprIsAnalyzed(SubqueryExpr subqueryExpr, boolean isAnalyzed) {
         subqueryExprIsAnalyzed.put(subqueryExpr, isAnalyzed);
     }
@@ -157,29 +302,341 @@ public class CascadesContext {
         return execute(new RewriteBottomUpJob(memo.getRoot(), currentJobContext, ImmutableList.copyOf(rules)));
     }
 
-    public CascadesContext bottomUpRewrite(Rule... rules) {
-        return bottomUpRewrite(ImmutableList.copyOf(rules));
-    }
-
-    public CascadesContext bottomUpRewrite(List<Rule> rules) {
-        return execute(new RewriteBottomUpJob(memo.getRoot(), rules, currentJobContext));
-    }
-
     public CascadesContext topDownRewrite(RuleFactory... rules) {
         return execute(new RewriteTopDownJob(memo.getRoot(), currentJobContext, ImmutableList.copyOf(rules)));
     }
 
-    public CascadesContext topDownRewrite(Rule... rules) {
-        return topDownRewrite(ImmutableList.copyOf(rules));
+    public CTEContext getCteContext() {
+        return cteContext;
     }
 
-    public CascadesContext topDownRewrite(List<Rule> rules) {
-        return execute(new RewriteTopDownJob(memo.getRoot(), rules, currentJobContext));
+    public void setIsRewriteRoot(boolean isRewriteRoot) {
+        this.isRewriteRoot = isRewriteRoot;
+    }
+
+    public boolean isRewriteRoot() {
+        return isRewriteRoot;
+    }
+
+    public Optional<Scope> getOuterScope() {
+        return outerScope;
+    }
+
+    public void setOuterScope(@Nullable Scope outerScope) {
+        this.outerScope = Optional.ofNullable(outerScope);
+    }
+
+    public List<MaterializationContext> getMaterializationContexts() {
+        return materializationContexts.stream()
+                .filter(MaterializationContext::isAvailable)
+                .collect(Collectors.toList());
+    }
+
+    public void addMaterializationContext(MaterializationContext materializationContext) {
+        this.materializationContexts.add(materializationContext);
+    }
+
+    /**
+     * getAndCacheSessionVariable
+     */
+    public <T> T getAndCacheSessionVariable(String cacheName,
+            T defaultValue, Function<SessionVariable, T> variableSupplier) {
+        ConnectContext connectContext = getConnectContext();
+        if (connectContext == null) {
+            return defaultValue;
+        }
+
+        StatementContext statementContext = getStatementContext();
+        if (statementContext == null) {
+            return defaultValue;
+        }
+        return statementContext.getOrRegisterCache(cacheName,
+                () -> variableSupplier.apply(connectContext.getSessionVariable()));
     }
 
     private CascadesContext execute(Job job) {
         pushJob(job);
         jobScheduler.executeJobPool(this);
         return this;
+    }
+
+    /**
+     * Extract tables.
+     */
+    public void extractTables(LogicalPlan logicalPlan) {
+        Set<List<String>> tableNames = getTables(logicalPlan);
+        tables = Maps.newHashMap();
+        for (List<String> tableName : tableNames) {
+            try {
+                TableIf table = getTable(tableName);
+                tables.put(table.getId(), table);
+            } catch (Throwable e) {
+                // IGNORE
+            }
+        }
+
+    }
+
+    /** get table by table name, try to get from information from dumpfile first */
+    public TableIf getTableInMinidumpCache(String tableName) {
+        Preconditions.checkState(tables != null, "tables should not be null");
+        for (TableIf table : tables.values()) {
+            if (table.getName().equals(tableName)) {
+                return table;
+            }
+        }
+        if (getConnectContext().getSessionVariable().isPlayNereidsDump()) {
+            throw new AnalysisException("Minidump cache can not find table:" + tableName);
+        }
+        return null;
+    }
+
+    public List<TableIf> getTables() {
+        if (tables == null) {
+            return null;
+        } else {
+            return Lists.newArrayList(tables.values());
+        }
+    }
+
+    private Set<List<String>> getTables(LogicalPlan logicalPlan) {
+        final Set<List<String>> tableNames = new HashSet<>();
+        logicalPlan.foreach(p -> {
+            if (p instanceof LogicalFilter) {
+                tableNames.addAll(extractTableNamesFromFilter((LogicalFilter<?>) p));
+            } else if (p instanceof LogicalCTE) {
+                tableNames.addAll(extractTableNamesFromCTE((LogicalCTE<?>) p));
+            } else if (p instanceof LogicalProject) {
+                tableNames.addAll(extractTableNamesFromProject((LogicalProject<?>) p));
+            } else if (p instanceof LogicalHaving) {
+                tableNames.addAll(extractTableNamesFromHaving((LogicalHaving<?>) p));
+            } else if (p instanceof UnboundOneRowRelation) {
+                tableNames.addAll(extractTableNamesFromOneRowRelation((UnboundOneRowRelation) p));
+            } else {
+                Set<LogicalPlan> logicalPlans = p.collect(
+                        n -> (n instanceof UnboundRelation || n instanceof UnboundTableSink));
+                for (LogicalPlan plan : logicalPlans) {
+                    if (plan instanceof UnboundRelation) {
+                        tableNames.add(((UnboundRelation) plan).getNameParts());
+                    } else if (plan instanceof UnboundTableSink) {
+                        tableNames.add(((UnboundTableSink<?>) plan).getNameParts());
+                    } else {
+                        throw new AnalysisException("get tables from plan failed. meet unknown type node " + plan);
+                    }
+                }
+            }
+        });
+        return tableNames;
+    }
+
+    private Set<List<String>> extractTableNamesFromHaving(LogicalHaving<?> having) {
+        Set<SubqueryExpr> subqueryExprs = having.getPredicate()
+                .collect(SubqueryExpr.class::isInstance);
+        Set<List<String>> tableNames = new HashSet<>();
+        for (SubqueryExpr expr : subqueryExprs) {
+            LogicalPlan plan = expr.getQueryPlan();
+            tableNames.addAll(getTables(plan));
+        }
+        return tableNames;
+    }
+
+    private Set<List<String>> extractTableNamesFromOneRowRelation(UnboundOneRowRelation oneRowRelation) {
+        Set<SubqueryExpr> subqueryExprs = oneRowRelation.getProjects().stream()
+                .<Set<SubqueryExpr>>map(p -> p.collect(SubqueryExpr.class::isInstance))
+                .flatMap(Set::stream)
+                .collect(Collectors.toSet());
+        Set<List<String>> tableNames = new HashSet<>();
+        for (SubqueryExpr expr : subqueryExprs) {
+            LogicalPlan plan = expr.getQueryPlan();
+            tableNames.addAll(getTables(plan));
+        }
+        return tableNames;
+    }
+
+    private Set<List<String>> extractTableNamesFromProject(LogicalProject<?> project) {
+        Set<SubqueryExpr> subqueryExprs = project.getProjects().stream()
+                .<Set<SubqueryExpr>>map(p -> p.collect(SubqueryExpr.class::isInstance))
+                .flatMap(Set::stream)
+                .collect(Collectors.toSet());
+        Set<List<String>> tableNames = new HashSet<>();
+        for (SubqueryExpr expr : subqueryExprs) {
+            LogicalPlan plan = expr.getQueryPlan();
+            tableNames.addAll(getTables(plan));
+        }
+        return tableNames;
+    }
+
+    private Set<List<String>> extractTableNamesFromFilter(LogicalFilter<?> filter) {
+        Set<SubqueryExpr> subqueryExprs = filter.getPredicate()
+                .collect(SubqueryExpr.class::isInstance);
+        Set<List<String>> tableNames = new HashSet<>();
+        for (SubqueryExpr expr : subqueryExprs) {
+            LogicalPlan plan = expr.getQueryPlan();
+            tableNames.addAll(getTables(plan));
+        }
+        return tableNames;
+    }
+
+    private Set<List<String>> extractTableNamesFromCTE(LogicalCTE<?> cte) {
+        List<LogicalSubQueryAlias<Plan>> subQueryAliases = cte.getAliasQueries();
+        Set<List<String>> tableNames = new HashSet<>();
+        for (LogicalSubQueryAlias<Plan> subQueryAlias : subQueryAliases) {
+            tableNames.addAll(getTables(subQueryAlias));
+        }
+        return tableNames;
+    }
+
+    private TableIf getTable(List<String> nameParts) {
+        switch (nameParts.size()) {
+            case 1: { // table
+                String ctlName = getConnectContext().getEnv().getCurrentCatalog().getName();
+                String dbName = getConnectContext().getDatabase();
+                return getTable(ctlName, dbName, nameParts.get(0), getConnectContext().getEnv());
+            }
+            case 2: { // db.table
+                String ctlName = getConnectContext().getEnv().getCurrentCatalog().getName();
+                String dbName = nameParts.get(0);
+                return getTable(ctlName, dbName, nameParts.get(1), getConnectContext().getEnv());
+            }
+            case 3: { // catalog.db.table
+                return getTable(nameParts.get(0), nameParts.get(1), nameParts.get(2), getConnectContext().getEnv());
+            }
+            default:
+                throw new IllegalStateException("Table name [" + String.join(".", nameParts) + "] is invalid.");
+        }
+    }
+
+    /**
+     * Find table from catalog.
+     */
+    public TableIf getTable(String ctlName, String dbName, String tableName, Env env) {
+        CatalogIf catalog = env.getCatalogMgr().getCatalog(ctlName);
+        if (catalog == null) {
+            throw new RuntimeException("Catalog [" + ctlName + "] does not exist.");
+        }
+        DatabaseIf db = catalog.getDbNullable(dbName);
+        if (db == null) {
+            throw new RuntimeException("Database [" + dbName + "] does not exist in catalog [" + ctlName + "].");
+        }
+        db.readLock();
+        try {
+            TableIf table = db.getTableNullable(tableName);
+            if (table == null) {
+                throw new RuntimeException("Table [" + tableName + "] does not exist in database [" + dbName + "].");
+            }
+            return table;
+        } finally {
+            db.readUnlock();
+        }
+    }
+
+    /**
+     * Used to lock table
+     */
+    public static class Lock implements AutoCloseable {
+
+        CascadesContext cascadesContext;
+        private final Stack<TableIf> locked = new Stack<>();
+
+        /**
+         * Try to acquire read locks on tables, throw runtime exception once the acquiring for read lock failed.
+         */
+        public Lock(LogicalPlan plan, CascadesContext cascadesContext) {
+            this.cascadesContext = cascadesContext;
+            // tables can also be load from dump file
+            if (cascadesContext.tables == null) {
+                cascadesContext.extractTables(plan);
+            }
+            for (TableIf table : cascadesContext.tables.values()) {
+                if (!table.needReadLockWhenPlan()) {
+                    continue;
+                }
+                if (!table.tryReadLock(1, TimeUnit.MINUTES)) {
+                    close();
+                    throw new RuntimeException(String.format("Failed to get read lock on table: %s", table.getName()));
+                }
+                locked.push(table);
+            }
+        }
+
+        @Override
+        public void close() {
+            while (!locked.empty()) {
+                locked.pop().readUnlock();
+            }
+        }
+    }
+
+    public void putCTEIdToConsumer(LogicalCTEConsumer cteConsumer) {
+        Set<LogicalCTEConsumer> consumers = this.statementContext.getCteIdToConsumers()
+                .computeIfAbsent(cteConsumer.getCteId(), k -> new HashSet<>());
+        consumers.add(cteConsumer);
+    }
+
+    public void putCTEIdToProject(CTEId cteId, NamedExpression p) {
+        Set<NamedExpression> projects = this.statementContext.getCteIdToProjects()
+                .computeIfAbsent(cteId, k -> new HashSet<>());
+        projects.add(p);
+    }
+
+    public Set<NamedExpression> getProjectForProducer(CTEId cteId) {
+        return this.statementContext.getCteIdToProjects().get(cteId);
+    }
+
+    public Map<CTEId, Set<LogicalCTEConsumer>> getCteIdToConsumers() {
+        return this.statementContext.getCteIdToConsumers();
+    }
+
+    public void putConsumerIdToFilter(RelationId id, Expression filter) {
+        Set<Expression> filters = this.getConsumerIdToFilters().computeIfAbsent(id, k -> new HashSet<>());
+        filters.add(filter);
+    }
+
+    public Map<RelationId, Set<Expression>> getConsumerIdToFilters() {
+        return this.statementContext.getConsumerIdToFilters();
+    }
+
+    public void markConsumerUnderProject(LogicalCTEConsumer cteConsumer) {
+        Set<RelationId> consumerIds = this.statementContext.getCteIdToConsumerUnderProjects()
+                .computeIfAbsent(cteConsumer.getCteId(), k -> new HashSet<>());
+        consumerIds.add(cteConsumer.getRelationId());
+    }
+
+    public boolean couldPruneColumnOnProducer(CTEId cteId) {
+        Set<RelationId> consumerIds = this.statementContext.getCteIdToConsumerUnderProjects().get(cteId);
+        return consumerIds.size() == this.statementContext.getCteIdToConsumers().get(cteId).size();
+    }
+
+    public void addCTEConsumerGroup(CTEId cteId, Group g, Map<Slot, Slot> producerSlotToConsumerSlot) {
+        List<Pair<Map<Slot, Slot>, Group>> consumerGroups =
+                this.statementContext.getCteIdToConsumerGroup().computeIfAbsent(cteId, k -> new ArrayList<>());
+        consumerGroups.add(Pair.of(producerSlotToConsumerSlot, g));
+    }
+
+    /**
+     * Update CTE consumer group as producer's stats update
+     */
+    public void updateConsumerStats(CTEId cteId, Statistics statistics) {
+        List<Pair<Map<Slot, Slot>, Group>> consumerGroups = this.statementContext.getCteIdToConsumerGroup().get(cteId);
+        for (Pair<Map<Slot, Slot>, Group> p : consumerGroups) {
+            Map<Slot, Slot> producerSlotToConsumerSlot = p.first;
+            Statistics updatedConsumerStats = new StatisticsBuilder(statistics).build();
+            for (Entry<Expression, ColumnStatistic> entry : statistics.columnStatistics().entrySet()) {
+                updatedConsumerStats.addColumnStats(producerSlotToConsumerSlot.get(entry.getKey()), entry.getValue());
+            }
+            p.value().setStatistics(updatedConsumerStats);
+        }
+    }
+
+    public boolean isLeadingJoin() {
+        return isLeadingJoin;
+    }
+
+    public void setLeadingJoin(boolean leadingJoin) {
+        isLeadingJoin = leadingJoin;
+    }
+
+    public Map<String, Hint> getHintMap() {
+        return hintMap;
     }
 }

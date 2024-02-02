@@ -17,15 +17,19 @@
 
 #pragma once
 
+#include <butil/macros.h>
+#include <sched.h>
+#include <stddef.h>
+
 #include <deque>
 #include <map>
-#include <memory>
 #include <mutex>
+#include <new>
 #include <thread>
+#include <utility>
 #include <vector>
 
-#include "common/compiler_util.h"
-#include "gutil/macros.h"
+#include "common/compiler_util.h" // IWYU pragma: keep
 
 namespace doris {
 
@@ -124,7 +128,11 @@ public:
 
     size_t size() const { return _size; }
     T* access() const {
+#ifdef __APPLE__
+        size_t cpu_id = 0;
+#else
         size_t cpu_id = sched_getcpu();
+#endif
         if (cpu_id >= _size) {
             cpu_id &= _size - 1;
         }

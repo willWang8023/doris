@@ -17,21 +17,39 @@
 
 package org.apache.doris.nereids.trees.plans.physical;
 
+import org.apache.doris.nereids.hint.DistributeHint;
 import org.apache.doris.nereids.memo.GroupExpression;
+import org.apache.doris.nereids.properties.DistributionSpec;
+import org.apache.doris.nereids.properties.DistributionSpecReplicated;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.properties.PhysicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
+import org.apache.doris.nereids.trees.expressions.MarkJoinSlotReference;
+import org.apache.doris.nereids.trees.expressions.Slot;
+import org.apache.doris.nereids.trees.plans.DistributeType;
 import org.apache.doris.nereids.trees.plans.JoinType;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.algebra.Join;
 import org.apache.doris.nereids.util.ExpressionUtils;
+import org.apache.doris.nereids.util.JoinUtils;
+import org.apache.doris.nereids.util.Utils;
+import org.apache.doris.statistics.Statistics;
 
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
+import org.json.JSONObject;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Abstract class for all physical join node.
@@ -40,66 +58,118 @@ public abstract class AbstractPhysicalJoin<
         LEFT_CHILD_TYPE extends Plan,
         RIGHT_CHILD_TYPE extends Plan>
         extends PhysicalBinary<LEFT_CHILD_TYPE, RIGHT_CHILD_TYPE> implements Join {
+
     protected final JoinType joinType;
-
     protected final List<Expression> hashJoinConjuncts;
+    protected final List<Expression> otherJoinConjuncts;
+    protected final List<Expression> markJoinConjuncts;
+    protected final DistributeHint hint;
+    protected final Optional<MarkJoinSlotReference> markJoinSlotReference;
+    protected final List<RuntimeFilter> runtimeFilters = Lists.newArrayList();
 
-    protected final Optional<Expression> otherJoinCondition;
+    // use for translate only
+    protected final List<Expression> filterConjuncts = Lists.newArrayList();
+    protected boolean shouldTranslateOutput = true;
 
     /**
      * Constructor of PhysicalJoin.
-     *
-     * @param joinType Which join type, left semi join, inner join...
-     * @param condition join condition.
      */
-    public AbstractPhysicalJoin(PlanType type, JoinType joinType, List<Expression> hashJoinConjuncts,
-            Optional<Expression> condition,
-            Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
-            LEFT_CHILD_TYPE leftChild, RIGHT_CHILD_TYPE rightChild) {
-        super(type, groupExpression, logicalProperties, leftChild, rightChild);
-        this.joinType = Objects.requireNonNull(joinType, "joinType can not be null");
-        this.hashJoinConjuncts = hashJoinConjuncts;
-        this.otherJoinCondition = Objects.requireNonNull(condition, "condition can not be null");
+    public AbstractPhysicalJoin(
+            PlanType type,
+            JoinType joinType,
+            List<Expression> hashJoinConjuncts,
+            List<Expression> otherJoinConjuncts,
+            DistributeHint hint,
+            Optional<MarkJoinSlotReference> markJoinSlotReference,
+            Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties, LEFT_CHILD_TYPE leftChild, RIGHT_CHILD_TYPE rightChild) {
+        this(type, joinType, hashJoinConjuncts, otherJoinConjuncts, ExpressionUtils.EMPTY_CONDITION,
+                hint, markJoinSlotReference, groupExpression, logicalProperties, null, null,
+                leftChild, rightChild);
     }
 
     /**
      * Constructor of PhysicalJoin.
-     *
-     * @param joinType Which join type, left semi join, inner join...
-     * @param condition join condition.
      */
-    public AbstractPhysicalJoin(PlanType type, JoinType joinType, List<Expression> hashJoinConjuncts,
-            Optional<Expression> condition, Optional<GroupExpression> groupExpression,
-            LogicalProperties logicalProperties, PhysicalProperties physicalProperties,
-            LEFT_CHILD_TYPE leftChild, RIGHT_CHILD_TYPE rightChild) {
-        super(type, groupExpression, logicalProperties, physicalProperties, leftChild, rightChild);
+    public AbstractPhysicalJoin(
+            PlanType type,
+            JoinType joinType,
+            List<Expression> hashJoinConjuncts,
+            List<Expression> otherJoinConjuncts,
+            DistributeHint hint,
+            Optional<MarkJoinSlotReference> markJoinSlotReference,
+            Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties,
+            PhysicalProperties physicalProperties,
+            Statistics statistics,
+            LEFT_CHILD_TYPE leftChild,
+            RIGHT_CHILD_TYPE rightChild) {
+        this(type, joinType, hashJoinConjuncts, otherJoinConjuncts, ExpressionUtils.EMPTY_CONDITION,
+                hint, markJoinSlotReference, groupExpression, logicalProperties, physicalProperties,
+                statistics, leftChild, rightChild);
+    }
+
+    protected AbstractPhysicalJoin(
+            PlanType type,
+            JoinType joinType,
+            List<Expression> hashJoinConjuncts,
+            List<Expression> otherJoinConjuncts,
+            List<Expression> markJoinConjuncts,
+            DistributeHint hint,
+            Optional<MarkJoinSlotReference> markJoinSlotReference,
+            Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties,
+            PhysicalProperties physicalProperties,
+            Statistics statistics,
+            LEFT_CHILD_TYPE leftChild,
+            RIGHT_CHILD_TYPE rightChild) {
+        super(type, groupExpression, logicalProperties, physicalProperties, statistics, leftChild, rightChild);
         this.joinType = Objects.requireNonNull(joinType, "joinType can not be null");
-        this.hashJoinConjuncts = hashJoinConjuncts;
-        this.otherJoinCondition = Objects.requireNonNull(condition, "condition can not be null");
+        this.hashJoinConjuncts = ImmutableList.copyOf(hashJoinConjuncts);
+        this.otherJoinConjuncts = ImmutableList.copyOf(otherJoinConjuncts);
+        this.markJoinConjuncts = ImmutableList.copyOf(markJoinConjuncts);
+        this.hint = hint;
+        this.markJoinSlotReference = markJoinSlotReference;
     }
 
     public List<Expression> getHashJoinConjuncts() {
         return hashJoinConjuncts;
     }
 
+    public boolean isShouldTranslateOutput() {
+        return shouldTranslateOutput;
+    }
+
+    public void setShouldTranslateOutput(boolean shouldTranslateOutput) {
+        this.shouldTranslateOutput = shouldTranslateOutput;
+    }
+
     public JoinType getJoinType() {
         return joinType;
     }
 
-    public Optional<Expression> getOtherJoinCondition() {
-        return otherJoinCondition;
+    public List<Expression> getOtherJoinConjuncts() {
+        return otherJoinConjuncts;
+    }
+
+    public boolean isMarkJoin() {
+        return markJoinSlotReference.isPresent();
+    }
+
+    public List<Expression> getMarkJoinConjuncts() {
+        return markJoinConjuncts;
     }
 
     @Override
     public List<? extends Expression> getExpressions() {
-        Builder<Expression> builder = new Builder<Expression>()
-                .addAll(hashJoinConjuncts);
-        otherJoinCondition.ifPresent(builder::add);
-        return builder.build();
+        return new Builder<Expression>()
+                .addAll(hashJoinConjuncts)
+                .addAll(otherJoinConjuncts)
+                .addAll(markJoinConjuncts).build();
     }
 
     // TODO:
-    // 1. consider the order of conjucts in otherJoinCondition and hashJoinConditions
+    // 1. consider the order of conjucts in otherJoinConjuncts and hashJoinConditions
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -108,33 +178,133 @@ public abstract class AbstractPhysicalJoin<
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        if (!super.equals(o)) {
-            return false;
-        }
         AbstractPhysicalJoin<?, ?> that = (AbstractPhysicalJoin<?, ?>) o;
         return joinType == that.joinType
                 && hashJoinConjuncts.equals(that.hashJoinConjuncts)
-                && otherJoinCondition.equals(that.otherJoinCondition);
+                && otherJoinConjuncts.equals(that.otherJoinConjuncts)
+                && markJoinConjuncts.equals(that.markJoinConjuncts)
+                && hint.equals(that.hint)
+                && Objects.equals(markJoinSlotReference, that.markJoinSlotReference);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), joinType, hashJoinConjuncts, otherJoinCondition);
+        return Objects.hash(joinType, hashJoinConjuncts, otherJoinConjuncts, markJoinConjuncts, markJoinSlotReference);
     }
 
     /**
-     * hashJoinConjuncts and otherJoinCondition
+     * hashJoinConjuncts and otherJoinConjuncts
      *
-     * @return the combination of hashJoinConjuncts and otherJoinCondition
+     * @return the combination of hashJoinConjuncts and otherJoinConjuncts
      */
     public Optional<Expression> getOnClauseCondition() {
-        Optional<Expression> hashJoinCondition = ExpressionUtils.optionalAnd(hashJoinConjuncts);
+        // TODO this function is called by AggScalarSubQueryToWindowFunction and InferPredicates
+        //  we assume they can handle mark join correctly
+        Optional<Expression> normalJoinConjuncts =
+                ExpressionUtils.optionalAnd(hashJoinConjuncts, otherJoinConjuncts);
+        return normalJoinConjuncts.isPresent()
+                ? ExpressionUtils.optionalAnd(ImmutableList.of(normalJoinConjuncts.get()),
+                markJoinConjuncts)
+                : ExpressionUtils.optionalAnd(markJoinConjuncts);
+    }
 
-        if (hashJoinCondition.isPresent() && otherJoinCondition.isPresent()) {
-            return ExpressionUtils.optionalAnd(hashJoinCondition.get(), otherJoinCondition.get());
+    @Override
+    public DistributeHint getDistributeHint() {
+        return hint;
+    }
+
+    public List<Expression> getFilterConjuncts() {
+        return filterConjuncts;
+    }
+
+    public Optional<MarkJoinSlotReference> getMarkJoinSlotReference() {
+        return markJoinSlotReference;
+    }
+
+    public void addFilterConjuncts(Collection<Expression> conjuncts) {
+        filterConjuncts.addAll(conjuncts);
+    }
+
+    @Override
+    public JSONObject toJson() {
+        JSONObject physicalJoin = super.toJson();
+        JSONObject properties = new JSONObject();
+        properties.put("JoinType", joinType.toString());
+        properties.put("HashJoinConjuncts", hashJoinConjuncts.toString());
+        properties.put("OtherJoinConjuncts", otherJoinConjuncts.toString());
+        properties.put("MarkJoinConjuncts", markJoinConjuncts.toString());
+        properties.put("JoinHint", hint.toString());
+        properties.put("MarkJoinSlotReference", markJoinSlotReference.toString());
+        physicalJoin.put("Properties", properties);
+        return physicalJoin;
+    }
+
+    public void addRuntimeFilter(RuntimeFilter rf) {
+        runtimeFilters.add(rf);
+    }
+
+    public List<RuntimeFilter> getRuntimeFilters() {
+        return runtimeFilters;
+    }
+
+    @Override
+    public List<Slot> computeOutput() {
+        return ImmutableList.<Slot>builder()
+                .addAll(JoinUtils.getJoinOutput(joinType, left(), right()))
+                .addAll(isMarkJoin()
+                        ? ImmutableList.of(markJoinSlotReference.get()) : ImmutableList.of())
+                .build();
+    }
+
+    /**
+     * getConditionSlot
+     */
+    public Set<Slot> getConditionSlot() {
+        // this function is called by rules which reject mark join
+        // so markJoinConjuncts is not processed here
+        Preconditions.checkState(!isMarkJoin(),
+                "shouldn't call mark join's getConditionSlot method");
+        return Stream.concat(hashJoinConjuncts.stream(), otherJoinConjuncts.stream())
+                .flatMap(expr -> expr.getInputSlots().stream()).collect(ImmutableSet.toImmutableSet());
+    }
+
+    @Override
+    public String toString() {
+        List<Object> args = Lists.newArrayList("type", joinType,
+                "stats", statistics,
+                "hashCondition", hashJoinConjuncts,
+                "otherCondition", otherJoinConjuncts,
+                "markCondition", markJoinConjuncts);
+        if (markJoinSlotReference.isPresent()) {
+            args.add("isMarkJoin");
+            args.add("true");
         }
+        if (markJoinSlotReference.isPresent()) {
+            args.add("MarkJoinSlotReference");
+            args.add(markJoinSlotReference.get());
+        }
+        if (hint.distributeType != DistributeType.NONE) {
+            args.add("hint");
+            args.add(hint.getExplainString());
+        }
+        if (!runtimeFilters.isEmpty()) {
+            args.add("runtimeFilters");
+            args.add(runtimeFilters.stream().map(rf -> rf.toString() + " ").collect(Collectors.toList()));
+        }
+        return Utils.toSqlString(this.getClass().getSimpleName() + "[" + id.asInt() + "]" + getGroupIdWithPrefix(),
+                args.toArray());
+    }
 
-        return hashJoinCondition.map(Optional::of)
-                .orElse(otherJoinCondition);
+    /**
+     * true if this is a broadcast join
+     */
+    public boolean isBroadCastJoin() {
+        if (child(1) instanceof PhysicalDistribute) {
+            DistributionSpec distSpec = ((PhysicalDistribute) child(1)).getDistributionSpec();
+            if (distSpec instanceof DistributionSpecReplicated) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -17,7 +17,25 @@
 
 #pragma once
 
+#include <gen_cpp/PaloInternalService_types.h>
+
+#include <list>
+#include <memory>
+#include <vector>
+
+#include "common/status.h"
+#include "vec/exec/format/format_common.h"
 #include "vec/exec/scan/vscan_node.h"
+
+namespace doris {
+class DescriptorTbl;
+class ObjectPool;
+class RuntimeState;
+class TPlanNode;
+namespace vectorized {
+class VScanner;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 
@@ -25,24 +43,29 @@ class NewFileScanNode : public VScanNode {
 public:
     NewFileScanNode(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs);
 
+    Status init(const TPlanNode& tnode, RuntimeState* state) override;
+
     Status prepare(RuntimeState* state) override;
 
-    void set_scan_ranges(const std::vector<TScanRangeParams>& scan_ranges) override;
+    void set_scan_ranges(RuntimeState* state,
+                         const std::vector<TScanRangeParams>& scan_ranges) override;
+
+    std::string get_name() override;
 
 protected:
     Status _init_profile() override;
     Status _process_conjuncts() override;
-    Status _init_scanners(std::list<VScanner*>* scanners) override;
-
-protected:
-    std::vector<TExpr> _pre_filter_texprs;
-
-private:
-    VScanner* _create_scanner(const TFileScanRange& scan_range);
+    Status _init_scanners(std::list<VScannerSPtr>* scanners) override;
 
 private:
     std::vector<TScanRangeParams> _scan_ranges;
-    TFileScanNode _file_scan_node;
-    std::unique_ptr<MemTracker> _scanner_mem_tracker;
+    // A in memory cache to save some common components
+    // of the this scan node. eg:
+    // 1. iceberg delete file
+    // 2. parquet file meta
+    // KVCache<std::string> _kv_cache;
+    std::unique_ptr<ShardedKVCache> _kv_cache;
+
+    std::string _table_name;
 };
 } // namespace doris::vectorized

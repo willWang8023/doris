@@ -17,12 +17,29 @@
 
 #include "runtime/routine_load/data_consumer_pool.h"
 
+#include <gen_cpp/Types_types.h>
+
+#include <algorithm>
+// IWYU pragma: no_include <bits/chrono.h>
+#include <chrono> // IWYU pragma: keep
+#include <ctime>
+#include <iterator>
+#include <map>
+#include <ostream>
+#include <vector>
+
 #include "common/config.h"
+#include "common/logging.h"
+#include "common/status.h"
+#include "runtime/routine_load/data_consumer.h"
 #include "runtime/routine_load/data_consumer_group.h"
+#include "runtime/stream_load/stream_load_context.h"
+#include "util/uid_util.h"
 
 namespace doris {
 
-Status DataConsumerPool::get_consumer(StreamLoadContext* ctx, std::shared_ptr<DataConsumer>* ret) {
+Status DataConsumerPool::get_consumer(std::shared_ptr<StreamLoadContext> ctx,
+                                      std::shared_ptr<DataConsumer>* ret) {
     std::unique_lock<std::mutex> l(_lock);
 
     // check if there is an available consumer.
@@ -31,7 +48,7 @@ Status DataConsumerPool::get_consumer(StreamLoadContext* ctx, std::shared_ptr<Da
     while (iter != std::end(_pool)) {
         if ((*iter)->match(ctx)) {
             VLOG_NOTICE << "get an available data consumer from pool: " << (*iter)->id();
-            (*iter)->reset();
+            static_cast<void>((*iter)->reset());
             *ret = *iter;
             iter = _pool.erase(iter);
             return Status::OK();
@@ -58,7 +75,7 @@ Status DataConsumerPool::get_consumer(StreamLoadContext* ctx, std::shared_ptr<Da
     return Status::OK();
 }
 
-Status DataConsumerPool::get_consumer_grp(StreamLoadContext* ctx,
+Status DataConsumerPool::get_consumer_grp(std::shared_ptr<StreamLoadContext> ctx,
                                           std::shared_ptr<DataConsumerGroup>* ret) {
     if (ctx->load_src_type != TLoadSourceType::KAFKA) {
         return Status::InternalError(
@@ -96,11 +113,10 @@ void DataConsumerPool::return_consumer(std::shared_ptr<DataConsumer> consumer) {
         return;
     }
 
-    consumer->reset();
+    static_cast<void>(consumer->reset());
     _pool.push_back(consumer);
     VLOG_NOTICE << "return the data consumer: " << consumer->id()
                 << ", current pool size: " << _pool.size();
-    return;
 }
 
 void DataConsumerPool::return_consumers(DataConsumerGroup* grp) {
@@ -113,9 +129,6 @@ Status DataConsumerPool::start_bg_worker() {
     RETURN_IF_ERROR(Thread::create(
             "ResultBufferMgr", "clean_idle_consumer",
             [this]() {
-#ifdef GOOGLE_PROFILER
-                ProfilerRegisterThread();
-#endif
                 do {
                     _clean_idle_consumer_bg();
                 } while (!_stop_background_threads_latch.wait_for(std::chrono::seconds(60)));

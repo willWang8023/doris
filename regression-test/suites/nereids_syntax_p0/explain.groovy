@@ -15,21 +15,57 @@
 // specific language governing permissions and limitations
 // under the License.
 
-suite("explain") {
-    sql """
-        SET enable_vectorized_engine=true
-    """
-
+suite("nereids_explain") {
     sql """
         SET enable_nereids_planner=true
     """
 
     sql "SET enable_fallback_to_original_planner=false"
 
+    sql "SET enable_pipeline_engine=true"
+
     explain {
         sql("select count(2) + 1, sum(2) + sum(lo_suppkey) from lineorder")
-        contains "projections: lo_suppkey"
-        contains "project output tuple id: 1"
+        contains "sum(2) + sum(lo_suppkey)"
     }
 
+
+    explain {
+        sql("physical plan select 100")
+        contains "PhysicalOneRowRelation"
+    }
+
+    explain {
+        sql("logical plan select 100")
+        contains "LogicalOneRowRelation"
+    }
+
+    explain {
+        sql("parsed plan select 100")
+        contains "UnboundOneRowRelation"
+    }
+
+    explain {
+        sql("plan select * from lineorder where lo_orderkey > (select avg(lo_orderkey) from lineorder)")
+        contains "*LogicalSubQueryAlias"
+    }
+
+    explain {
+        sql("plan with s as (select * from supplier) select * from s as s1, s as s2")
+        contains "*LogicalSubQueryAlias"
+    }
+
+    explain {
+        sql """
+        verbose 
+        select case 
+            when 1=1 then cast(1 as int) 
+            when 1>1 then cast(1 as float)
+            else 0.0 end;
+            """
+        contains "SlotDescriptor{id=0, col=null, colUniqueId=null, type=DOUBLE, nullable=false, isAutoIncrement=false, subColPath=null}"
+    }
+
+    def explainStr = sql("select sum(if(lo_tax=1,lo_tax,0)) from lineorder where false").toString()
+    assertTrue(!explainStr.contains("projections"))
 }

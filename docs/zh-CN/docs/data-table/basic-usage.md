@@ -42,7 +42,7 @@ Doris 内置 root，密码默认为空。
 >
 >root 用户默认拥有集群所有权限。同时拥有 Grant_priv 和 Node_priv 的用户，可以将该权限赋予其他用户，拥有节点变更权限，包括 FE、BE、BROKER 节点的添加、删除、下线等操作。
 >
->关于权限这块的具体说明可以参照[权限管理](/docs/admin-manual/privilege-ldap/user-privilege)
+>关于权限这块的具体说明可以参照[权限管理](../admin-manual/privilege-ldap/user-privilege.md)
 
 启动完 Doris 程序之后，可以通过 root 或 admin 用户连接到 Doris 集群。 使用下面命令即可登录 Doris，登录后进入到Doris对应的Mysql命令行操作界面：
 
@@ -106,31 +106,42 @@ CREATE DATABASE example_db;
 > 如果不清楚命令的全名，可以使用 "help 命令某一字段" 进行模糊查询。如键入 'HELP CREATE'，可以匹配到 `CREATE DATABASE`, `CREATE TABLE`, `CREATE USER` 等命令。
 >
 > ```sql
-> mysql> HELP CREATE;
-> Many help items for your request exist.
-> To make a more specific request, please type 'help <item>',
-> where <item> is one of the following
-> topics:
->    CREATE CLUSTER
->    CREATE DATABASE
->    CREATE ENCRYPTKEY
->    CREATE FILE
->    CREATE FUNCTION
->    CREATE INDEX
->    CREATE MATERIALIZED VIEW
->    CREATE REPOSITORY
->    CREATE RESOURCE
->    CREATE ROLE
->    CREATE SYNC JOB
->    CREATE TABLE
->    CREATE USER
->    CREATE VIEW
->    ROUTINE LOAD
->    SHOW CREATE FUNCTION
->    SHOW CREATE ROUTINE LOAD
+>mysql> HELP CREATE;
+>Many help items for your request exist.
+>To make a more specific request, please type 'help <item>',
+>where <item> is one of the following
+>topics:
+>   CREATE CATALOG
+>   CREATE DATABASE
+>   CREATE ENCRYPTKEY
+>   CREATE EXTERNAL TABLE
+>   CREATE FILE
+>   CREATE FUNCTION
+>   CREATE INDEX
+>   CREATE MATERIALIZED VIEW
+>   CREATE POLICY
+>   CREATE REPOSITORY
+>   CREATE RESOURCE
+>   CREATE ROLE
+>   CREATE ROUTINE LOAD
+>   CREATE SQL BLOCK RULE
+>   CREATE SYNC JOB
+>   CREATE TABLE
+>   CREATE TABLE AS SELECT
+>   CREATE TABLE LIKE
+>   CREATE USER
+>   CREATE VIEW
+>   CREATE WORKLOAD GROUP
+>   SHOW CREATE CATALOG
+>   SHOW CREATE DATABASE
+>   SHOW CREATE FUNCTION
+>   SHOW CREATE LOAD
+>   SHOW CREATE REPOSITORY
+>   SHOW CREATE ROUTINE LOAD
+>   SHOW CREATE TABLE
 > ```
 
-数据库创建完成之后，可以通过 [SHOW DATABASES](../sql-manual/sql-reference/Show-Statements/SHOW-DATABASES.html#show-databases) 查看数据库信息。
+数据库创建完成之后，可以通过 [SHOW DATABASES](../sql-manual/sql-reference/Show-Statements/SHOW-DATABASES.md) 查看数据库信息。
 
 ```sql
 mysql> SHOW DATABASES;
@@ -165,7 +176,7 @@ mysql> USE example_db;
 Database changed
 ```
 
-Doris支持[复合分区和单分区](data-partition.html#复合分区与单分区)两种建表方式。下面以聚合模型为例，分别演示如何创建两种分区的数据表。
+Doris支持[复合分区和单分区](./data-partition.md)两种建表方式。下面以聚合模型为例，分别演示如何创建两种分区的数据表。
 
 #### 单分区
 
@@ -328,7 +339,7 @@ curl --location-trusted -u test:test -H "label:table2_20170707" -H "column_separ
 > 注意事项：
 >
 > 1. 采用流式导入建议文件大小限制在 10GB 以内，过大的文件会导致失败重试代价变大。
-> 2. label：Label 的主要作用是唯一标识一个导入任务，并且能够保证相同的 Label 仅会被成功导入一次，具体可以查看 [数据导入事务及原子性 ](../data-operate/import/import-scenes/load-atomicity)。
+> 2. label：Label 的主要作用是唯一标识一个导入任务，并且能够保证相同的 Label 仅会被成功导入一次，具体可以查看 [数据导入事务及原子性 ](../data-operate/import/import-scenes/load-atomicity.md)。
 > 3. 流式导入是同步命令。命令返回成功则表示数据已经导入，返回失败表示这批数据没有导入。
 
 #### Broker 导入
@@ -400,6 +411,28 @@ mysql> SELECT * FROM table1 ORDER BY citycode;
 +--------+----------+----------+------+
 5 rows in set (0.01 sec)
 ```
+
+### SELECT * EXCEPT
+
+<version since="1.2">
+
+`SELECT * EXCEPT` 语句指定要从结果中排除的一个或多个列的名称。输出中将忽略所有匹配的列名称。
+
+```sql
+MySQL> SELECT * except (username, citycode) FROM table1;
++--------+------+
+| siteid | pv   |
++--------+------+
+|      2 |    2 |
+|      5 |    3 |
+|      3 |    2 |
++--------+------+
+3 rows in set (0.01 sec)
+```
+
+**注意**：`SELECT * EXCEPT` 不会排除没有名称的列。
+
+</version>
 
 ### Join 查询
 
@@ -562,7 +595,7 @@ Rollup 建立之后，查询不需要指定 Rollup 进行查询。还是指定�
 
 同时，Doris 能够自动保证物化视图和基础表的数据一致性，并且在查询时自动匹配合适的物化视图，极大降低用户的数据维护成本，为用户提供一个一致且透明的查询加速体验。
 
-关于物化视图的具体介绍，可参阅 [物化视图](../advanced/materialized-view)
+关于物化视图的具体介绍，可参阅 [物化视图](../query-acceleration/materialized-view.md)
 
 ## 数据表的查询
 
@@ -679,7 +712,7 @@ mysql> select sum(table1.pv) from table1 join [shuffle] table2 where table1.site
 
 当部署多个 FE 节点时，用户可以在多个 FE 之上部署负载均衡层来实现 Doris 的高可用。
 
-具体安装部署及使用方式请参照 [负载均衡](../admin-manual/cluster-management/load-balancing)
+具体安装部署及使用方式请参照 [负载均衡](../admin-manual/cluster-management/load-balancing.md)
 
 ## 数据更新和删除
 
@@ -687,4 +720,4 @@ Doris 支持通过两种方式对已导入的数据进行删除。一种是通�
 
 另一种删除方式仅针对 Unique 主键唯一模型，通过导入数据的方式将需要删除的主键行数据进行导入。Doris 内部会通过删除标记位对数据进行最终的物理删除。这种删除方式适合以实时的方式对数据进行删除。
 
-关于删除和更新操作的具体说明，可参阅 [数据更新](../data-operate/update-delete/update) 相关文档。
+关于删除和更新操作的具体说明，可参阅 [数据更新](../data-operate/update-delete/update.md) 相关文档。

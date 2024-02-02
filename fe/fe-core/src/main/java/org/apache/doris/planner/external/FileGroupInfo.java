@@ -19,29 +19,33 @@ package org.apache.doris.planner.external;
 
 import org.apache.doris.analysis.BrokerDesc;
 import org.apache.doris.analysis.StorageBackend;
-import org.apache.doris.analysis.UserIdentity;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.FsBroker;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Config;
-import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.UserException;
 import org.apache.doris.common.util.BrokerUtil;
+import org.apache.doris.common.util.Util;
 import org.apache.doris.load.BrokerFileGroup;
-import org.apache.doris.planner.external.ExternalFileScanNode.ParamCreateContext;
+import org.apache.doris.planner.FileLoadScanNode;
 import org.apache.doris.system.Backend;
 import org.apache.doris.thrift.TBrokerFileStatus;
 import org.apache.doris.thrift.TExternalScanRange;
+import org.apache.doris.thrift.TFileCompressType;
 import org.apache.doris.thrift.TFileFormatType;
 import org.apache.doris.thrift.TFileRangeDesc;
 import org.apache.doris.thrift.TFileScanRange;
 import org.apache.doris.thrift.TFileScanRangeParams;
+import org.apache.doris.thrift.TFileType;
 import org.apache.doris.thrift.TNetworkAddress;
 import org.apache.doris.thrift.TScanRange;
 import org.apache.doris.thrift.TScanRangeLocation;
 import org.apache.doris.thrift.TScanRangeLocations;
+import org.apache.doris.thrift.TUniqueId;
 
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -59,6 +63,14 @@ public class FileGroupInfo {
     private static final String HIVE_DEFAULT_COLUMN_SEPARATOR = "\001";
     private static final String HIVE_DEFAULT_LINE_DELIMITER = "\n";
 
+    public enum JobType {
+        BULK_LOAD,
+        STREAM_LOAD
+    }
+
+    private JobType jobType;
+
+    private TUniqueId loadId;
     private long loadJobId;
     private long txnId;
     private Table targetTable;
@@ -68,13 +80,18 @@ public class FileGroupInfo {
     private int filesAdded;
     private boolean strictMode;
     private int loadParallelism;
-    private UserIdentity userIdentity;
     // set by getFileStatusAndCalcInstance
-    long bytesPerInstance = 0;
+    private long bytesPerInstance = 0;
+    // used for stream load, FILE_LOCAL or FILE_STREAM
+    private TFileType fileType;
+    private List<String> hiddenColumns = null;
+    private boolean isPartialUpdate = false;
 
+    // for broker load
     public FileGroupInfo(long loadJobId, long txnId, Table targetTable, BrokerDesc brokerDesc,
             BrokerFileGroup fileGroup, List<TBrokerFileStatus> fileStatuses, int filesAdded, boolean strictMode,
-            int loadParallelism, UserIdentity userIdentity) {
+            int loadParallelism) {
+        this.jobType = JobType.BULK_LOAD;
         this.loadJobId = loadJobId;
         this.txnId = txnId;
         this.targetTable = targetTable;
@@ -84,7 +101,26 @@ public class FileGroupInfo {
         this.filesAdded = filesAdded;
         this.strictMode = strictMode;
         this.loadParallelism = loadParallelism;
-        this.userIdentity = userIdentity;
+        this.fileType = brokerDesc.getFileType();
+    }
+
+    // for stream load
+    public FileGroupInfo(TUniqueId loadId, long txnId, Table targetTable, BrokerDesc brokerDesc,
+            BrokerFileGroup fileGroup, TBrokerFileStatus fileStatus, boolean strictMode,
+            TFileType fileType, List<String> hiddenColumns, boolean isPartialUpdate) {
+        this.jobType = JobType.STREAM_LOAD;
+        this.loadId = loadId;
+        this.txnId = txnId;
+        this.targetTable = targetTable;
+        this.brokerDesc = brokerDesc;
+        this.fileGroup = fileGroup;
+        this.fileStatuses = Lists.newArrayList();
+        this.fileStatuses.add(fileStatus);
+        this.filesAdded = 1;
+        this.strictMode = strictMode;
+        this.fileType = fileType;
+        this.hiddenColumns = hiddenColumns;
+        this.isPartialUpdate = isPartialUpdate;
     }
 
     public Table getTargetTable() {
@@ -111,8 +147,8 @@ public class FileGroupInfo {
         return loadParallelism;
     }
 
-    public UserIdentity getUserIdentity() {
-        return userIdentity;
+    public TFileType getFileType() {
+        return fileType;
     }
 
     public String getExplainString(String prefix) {
@@ -121,30 +157,46 @@ public class FileGroupInfo {
         return sb.toString();
     }
 
-    public void getFileStatusAndCalcInstance(BackendPolicy backendPolicy) throws UserException {
+    public List<String> getHiddenColumns() {
+        return hiddenColumns;
+    }
+
+    public boolean isPartialUpdate() {
+        return isPartialUpdate;
+    }
+
+    public void getFileStatusAndCalcInstance(FederationBackendPolicy backendPolicy) throws UserException {
         if (filesAdded == 0) {
             throw new UserException("No source file in this table(" + targetTable.getName() + ").");
         }
 
-        long totalBytes = 0;
-        for (TBrokerFileStatus fileStatus : fileStatuses) {
-            totalBytes += fileStatus.size;
-        }
-        int numInstances = (int) (totalBytes / Config.min_bytes_per_broker_scanner);
-        int totalLoadParallelism = loadParallelism * backendPolicy.numBackends();
-        numInstances = Math.min(totalLoadParallelism, numInstances);
-        numInstances = Math.min(numInstances, Config.max_broker_concurrency);
-        numInstances = Math.max(1, numInstances);
+        int numInstances = 1;
+        if (jobType == JobType.BULK_LOAD) {
+            long totalBytes = 0;
+            for (TBrokerFileStatus fileStatus : fileStatuses) {
+                totalBytes += fileStatus.size;
+            }
+            numInstances = (int) (totalBytes / Config.min_bytes_per_broker_scanner);
+            int totalLoadParallelism = loadParallelism * backendPolicy.numBackends();
+            numInstances = Math.min(totalLoadParallelism, numInstances);
+            numInstances = Math.min(numInstances, Config.max_broker_concurrency);
+            numInstances = Math.max(1, numInstances);
 
-        bytesPerInstance = totalBytes / numInstances + 1;
-        if (bytesPerInstance > Config.max_bytes_per_broker_scanner) {
-            throw new UserException("Scan bytes per file scanner exceed limit: " + Config.max_bytes_per_broker_scanner);
+            bytesPerInstance = totalBytes / numInstances + 1;
+            if (bytesPerInstance > Config.max_bytes_per_broker_scanner) {
+                throw new UserException(
+                        "Scan bytes per file scanner exceed limit: " + Config.max_bytes_per_broker_scanner);
+            }
+        } else {
+            // stream load, not need to split
+            bytesPerInstance = Long.MAX_VALUE;
         }
         LOG.info("number instance of file scan node is: {}, bytes per instance: {}", numInstances, bytesPerInstance);
     }
 
-    public void createScanRangeLocations(ParamCreateContext context, BackendPolicy backendPolicy,
-            List<TScanRangeLocations> scanRangeLocations) throws UserException {
+    public void createScanRangeLocations(FileLoadScanNode.ParamCreateContext context,
+                                         FederationBackendPolicy backendPolicy,
+                                         List<TScanRangeLocations> scanRangeLocations) throws UserException {
         TScanRangeLocations curLocations = newLocations(context.params, brokerDesc, backendPolicy);
         long curInstanceBytes = 0;
         long curFileOffset = 0;
@@ -154,11 +206,18 @@ public class FileGroupInfo {
             long tmpBytes = curInstanceBytes + leftBytes;
             // header_type
             TFileFormatType formatType = formatType(context.fileGroup.getFileFormat(), fileStatus.path);
+            context.params.setFormatType(formatType);
+            TFileCompressType compressType =
+                    Util.getOrInferCompressType(context.fileGroup.getCompressType(), fileStatus.path);
+            context.params.setCompressType(compressType);
             List<String> columnsFromPath = BrokerUtil.parseColumnsFromPath(fileStatus.path,
                     context.fileGroup.getColumnNamesFromPath());
-            if (tmpBytes > bytesPerInstance) {
+            // Assign scan range locations only for broker load.
+            // stream load has only one file, and no need to set multi scan ranges.
+            if (tmpBytes > bytesPerInstance && jobType != JobType.STREAM_LOAD) {
                 // Now only support split plain text
-                if ((formatType == TFileFormatType.FORMAT_CSV_PLAIN && fileStatus.isSplitable)
+                if (compressType == TFileCompressType.PLAIN
+                        && (formatType == TFileFormatType.FORMAT_CSV_PLAIN && fileStatus.isSplitable)
                         || formatType == TFileFormatType.FORMAT_JSON) {
                     long rangeBytes = bytesPerInstance - curInstanceBytes;
                     TFileRangeDesc rangeDesc = createFileRangeDesc(curFileOffset, fileStatus, rangeBytes,
@@ -166,10 +225,9 @@ public class FileGroupInfo {
                     curLocations.getScanRange().getExtScanRange().getFileScanRange().addToRanges(rangeDesc);
                     curFileOffset += rangeBytes;
                 } else {
-                    TFileRangeDesc rangeDesc = createFileRangeDesc(curFileOffset, fileStatus, leftBytes,
+                    TFileRangeDesc rangeDesc = createFileRangeDesc(0, fileStatus, leftBytes,
                             columnsFromPath);
                     curLocations.getScanRange().getExtScanRange().getFileScanRange().addToRanges(rangeDesc);
-                    curFileOffset = 0;
                     i++;
                 }
 
@@ -194,7 +252,7 @@ public class FileGroupInfo {
     }
 
     protected TScanRangeLocations newLocations(TFileScanRangeParams params, BrokerDesc brokerDesc,
-            BackendPolicy backendPolicy) throws UserException {
+            FederationBackendPolicy backendPolicy) throws UserException {
 
         Backend selectedBackend = backendPolicy.getNextBe();
 
@@ -208,7 +266,7 @@ public class FileGroupInfo {
             } catch (AnalysisException e) {
                 throw new UserException(e.getMessage());
             }
-            params.addToBrokerAddresses(new TNetworkAddress(broker.ip, broker.port));
+            params.addToBrokerAddresses(new TNetworkAddress(broker.host, broker.port));
         } else {
             params.setBrokerAddresses(new ArrayList<>());
         }
@@ -224,69 +282,56 @@ public class FileGroupInfo {
         TScanRangeLocations locations = new TScanRangeLocations();
         locations.setScanRange(scanRange);
 
-        TScanRangeLocation location = new TScanRangeLocation();
-        location.setBackendId(selectedBackend.getId());
-        location.setServer(new TNetworkAddress(selectedBackend.getHost(), selectedBackend.getBePort()));
-        locations.addToLocations(location);
+        if (jobType == JobType.BULK_LOAD) {
+            TScanRangeLocation location = new TScanRangeLocation();
+            location.setBackendId(selectedBackend.getId());
+            location.setServer(new TNetworkAddress(selectedBackend.getHost(), selectedBackend.getBePort()));
+            locations.addToLocations(location);
+        } else {
+            // stream load do not need locations
+            locations.setLocations(Lists.newArrayList());
+        }
 
         return locations;
     }
 
-    private String getHeaderType(String formatType) {
-        if (formatType != null) {
-            if (formatType.toLowerCase().equals(FeConstants.csv_with_names) || formatType.toLowerCase()
-                    .equals(FeConstants.csv_with_names_and_types)) {
-                return formatType;
-            }
-        }
-        return "";
-    }
-
     private TFileFormatType formatType(String fileFormat, String path) throws UserException {
-        if (fileFormat != null) {
-            if (fileFormat.toLowerCase().equals("parquet")) {
-                return TFileFormatType.FORMAT_PARQUET;
-            } else if (fileFormat.toLowerCase().equals("orc")) {
-                return TFileFormatType.FORMAT_ORC;
-            } else if (fileFormat.toLowerCase().equals("json")) {
-                return TFileFormatType.FORMAT_JSON;
-                // csv/csv_with_name/csv_with_names_and_types treat as csv format
-            } else if (fileFormat.toLowerCase().equals(FeConstants.csv) || fileFormat.toLowerCase()
-                    .equals(FeConstants.csv_with_names) || fileFormat.toLowerCase()
-                    .equals(FeConstants.csv_with_names_and_types)
-                    // TODO: Add TEXTFILE to TFileFormatType to Support hive text file format.
-                    || fileFormat.toLowerCase().equals(FeConstants.text)) {
-                return TFileFormatType.FORMAT_CSV_PLAIN;
-            } else {
-                throw new UserException("Not supported file format: " + fileFormat);
-            }
+        if (fileFormat == null) {
+            // get file format by the file path
+            return Util.getFileFormatTypeFromPath(path);
         }
-
-        String lowerCasePath = path.toLowerCase();
-        if (lowerCasePath.endsWith(".parquet") || lowerCasePath.endsWith(".parq")) {
-            return TFileFormatType.FORMAT_PARQUET;
-        } else if (lowerCasePath.endsWith(".gz")) {
-            return TFileFormatType.FORMAT_CSV_GZ;
-        } else if (lowerCasePath.endsWith(".bz2")) {
-            return TFileFormatType.FORMAT_CSV_BZ2;
-        } else if (lowerCasePath.endsWith(".lz4")) {
-            return TFileFormatType.FORMAT_CSV_LZ4FRAME;
-        } else if (lowerCasePath.endsWith(".lzo")) {
-            return TFileFormatType.FORMAT_CSV_LZOP;
-        } else if (lowerCasePath.endsWith(".deflate")) {
-            return TFileFormatType.FORMAT_CSV_DEFLATE;
-        } else {
-            return TFileFormatType.FORMAT_CSV_PLAIN;
+        TFileFormatType formatType = Util.getFileFormatTypeFromName(fileFormat);
+        if (formatType == TFileFormatType.FORMAT_UNKNOWN) {
+            throw new UserException("Not supported file format: " + fileFormat);
         }
+        return formatType;
     }
 
     private TFileRangeDesc createFileRangeDesc(long curFileOffset, TBrokerFileStatus fileStatus, long rangeBytes,
             List<String> columnsFromPath) {
         TFileRangeDesc rangeDesc = new TFileRangeDesc();
-        rangeDesc.setPath(fileStatus.path);
-        rangeDesc.setStartOffset(curFileOffset);
-        rangeDesc.setSize(rangeBytes);
-        rangeDesc.setColumnsFromPath(columnsFromPath);
+        if (jobType == JobType.BULK_LOAD) {
+            rangeDesc.setPath(fileStatus.path);
+            rangeDesc.setStartOffset(curFileOffset);
+            rangeDesc.setSize(rangeBytes);
+            rangeDesc.setFileSize(fileStatus.size);
+            rangeDesc.setColumnsFromPath(columnsFromPath);
+        } else {
+            // for stream load
+            if (getFileType() == TFileType.FILE_LOCAL) {
+                // when loading parquet via stream, there will be a local file saved on BE
+                // so to read it as a local file.
+                Preconditions.checkState(fileGroup.getFilePaths().size() == 1);
+                rangeDesc.setPath(fileGroup.getFilePaths().get(0));
+                rangeDesc.setStartOffset(0);
+            }
+            rangeDesc.setLoadId(loadId);
+            rangeDesc.setSize(fileStatus.size);
+            rangeDesc.setFileSize(fileStatus.size);
+        }
+        rangeDesc.setModificationTime(fileStatus.getModificationTime());
         return rangeDesc;
     }
 }
+
+

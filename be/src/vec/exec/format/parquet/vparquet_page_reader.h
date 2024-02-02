@@ -17,9 +17,18 @@
 
 #pragma once
 
+#include <gen_cpp/parquet_types.h>
+#include <stdint.h>
+
 #include "common/status.h"
-#include "gen_cpp/parquet_types.h"
-#include "io/buffered_reader.h"
+
+namespace doris {
+namespace io {
+class BufferedStreamReader;
+struct IOContext;
+} // namespace io
+struct Slice;
+} // namespace doris
 
 namespace doris::vectorized {
 
@@ -28,10 +37,19 @@ namespace doris::vectorized {
  */
 class PageReader {
 public:
-public:
-    PageReader(BufferedStreamReader* reader, uint64_t offset, uint64_t length);
+    struct Statistics {
+        int64_t decode_header_time = 0;
+    };
+
+    PageReader(io::BufferedStreamReader* reader, io::IOContext* io_ctx, uint64_t offset,
+               uint64_t length);
     ~PageReader() = default;
 
+    // Deprecated
+    // Parquet file may not be standardized,
+    // _end_offset may exceed the actual data area.
+    // ColumnChunkReader::has_next_page() use the number of parsed values for judgment
+    // [[deprecated]]
     bool has_next_page() const { return _offset < _end_offset; }
 
     Status next_page_header();
@@ -42,14 +60,22 @@ public:
 
     Status get_page_data(Slice& slice);
 
+    Statistics& statistics() { return _statistics; }
+
     void seek_to_page(int64_t page_header_offset) {
         _offset = page_header_offset;
         _next_header_offset = page_header_offset;
+        _state = INITIALIZED;
     }
 
 private:
-    BufferedStreamReader* _reader;
+    enum PageReaderState { INITIALIZED, HEADER_PARSED };
+
+    io::BufferedStreamReader* _reader = nullptr;
+    io::IOContext* _io_ctx = nullptr;
     tparquet::PageHeader _cur_page_header;
+    Statistics _statistics;
+    PageReaderState _state = INITIALIZED;
 
     uint64_t _offset = 0;
     uint64_t _next_header_offset = 0;

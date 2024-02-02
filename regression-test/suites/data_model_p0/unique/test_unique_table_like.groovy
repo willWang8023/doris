@@ -16,11 +16,9 @@
 // under the License.
 
 suite("test_unique_table_like") {
-    def dbName = "test_unique_db"
-    List<List<Object>> db = sql "show databases like '${dbName}'"
-    if (db.size() == 0) {
-        sql "CREATE DATABASE  ${dbName}"
-    }
+    def dbName = "test_unique_like_db"
+    sql "drop database if exists ${dbName}"
+    sql "CREATE DATABASE ${dbName}"
     sql "use ${dbName}"
 
     // test uniq table like 

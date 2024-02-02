@@ -89,20 +89,30 @@ enum TPrimitiveType {
   TIMEV2,
   DECIMAL32,
   DECIMAL64,
-  DECIMAL128,
+  DECIMAL128I,
+  JSONB,
+  UNSUPPORTED,
+  VARIANT,
+  LAMBDA_FUNCTION,
+  AGG_STATE,
+  DECIMAL256,
+  IPV4,
+  IPV6
 }
 
 enum TTypeNodeType {
     SCALAR,
     ARRAY,
     MAP,
-    STRUCT
+    STRUCT,
+    VARIANT,
 }
 
 enum TStorageBackendType {
     BROKER,
     S3,
     HDFS,
+    JFS,
     LOCAL,
     OFS
 }
@@ -123,6 +133,7 @@ struct TScalarType {
 struct TStructField {
     1: required string name
     2: optional string comment
+    3: optional bool contains_null
 }
 
 struct TTypeNode {
@@ -134,8 +145,11 @@ struct TTypeNode {
     // only used for structs; has struct_fields.size() corresponding child types
     3: optional list<TStructField> struct_fields
 
-    // only used for complex types, such as array, map and etc.
+    // old version used for array
     4: optional bool contains_null
+
+    // update for map/struct type
+    5: optional list<bool> contains_nulls
 }
 
 // A flattened representation of a tree of column types obtained by depth-first
@@ -149,6 +163,10 @@ struct TTypeNode {
 struct TTypeDesc {
     1: list<TTypeNode> types
     2: optional bool is_nullable
+    3: optional i64  byte_size
+    4: optional list<TTypeDesc> sub_types
+    5: optional bool result_is_nullable
+    6: optional string function_name
 }
 
 enum TAggregationType {
@@ -164,7 +182,7 @@ enum TAggregationType {
 }
 
 enum TPushType {
-    LOAD,
+    LOAD, // deprecated, it is used for old hadoop dpp load
     DELETE,
     LOAD_DELETE,
     // for spark load push request
@@ -200,14 +218,21 @@ enum TTaskType {
     UNINSTALL_PLUGIN,
     COMPACTION,
     STORAGE_MEDIUM_MIGRATE_V2,
-    NOTIFY_UPDATE_STORAGE_POLICY
+    NOTIFY_UPDATE_STORAGE_POLICY, // deprecated
+    PUSH_COOLDOWN_CONF,
+    PUSH_STORAGE_POLICY,
+    ALTER_INVERTED_INDEX,
+    GC_BINLOG,
+
+    // CLOUD
+    CALCULATE_DELETE_BITMAP = 1000
 }
 
 enum TStmtType {
   QUERY,
   DDL,  // Data definition, e.g. CREATE TABLE (includes read-only functions e.g. SHOW)
   DML,  // Data modification e.g. INSERT
-  EXPLAIN   // EXPLAIN 
+  EXPLAIN   // EXPLAIN
 }
 
 // level of verboseness for "explain" output
@@ -288,6 +313,8 @@ enum TFunctionBinaryType {
   RPC,
 
   JAVA_UDF,
+
+  AGG_STATE
 }
 
 // Represents a fully qualified function name.
@@ -356,21 +383,58 @@ struct TFunction {
   13: optional bool vectorized = false
 }
 
+enum TJdbcOperation {
+    READ,
+    WRITE
+}
+
+enum TOdbcTableType {
+    MYSQL,
+    ORACLE,
+    POSTGRESQL,
+    SQLSERVER,
+    REDIS,
+    MONGODB,
+    CLICKHOUSE,
+    SAP_HANA,
+    TRINO,
+    PRESTO,
+    OCEANBASE,
+    OCEANBASE_ORACLE,
+    NEBULA
+}
+
 struct TJdbcExecutorCtorParams {
-  // Local path to the UDF's jar file
-  1: optional string jar_location_path
+  1: optional string statement
 
   // "jdbc:mysql://127.0.0.1:3307/test";
   2: optional string jdbc_url
 
-  //root
+  // root
   3: optional string jdbc_user
 
-  //password
+  // password
   4: optional string jdbc_password
 
-  //"com.mysql.jdbc.Driver"
+  // "com.mysql.jdbc.Driver"
   5: optional string jdbc_driver_class
+
+  6: optional i32 batch_size
+
+  7: optional TJdbcOperation op
+
+  // "/home/user/mysql-connector-java-5.1.47.jar"
+  8: optional string driver_path
+
+  9: optional TOdbcTableType table_type
+
+  10: optional i32 connection_pool_min_size
+  11: optional i32 connection_pool_max_size
+  12: optional i32 connection_pool_max_wait_time
+  13: optional i32 connection_pool_max_life_time
+  14: optional i32 connection_pool_cache_clear_time
+  15: optional bool connection_pool_keep_alive
+  16: optional i64 catalog_id
 }
 
 struct TJavaUdfExecutorCtorParams {
@@ -402,10 +466,22 @@ struct TJavaUdfExecutorCtorParams {
   9: optional i64 output_intermediate_state_ptr
 
   10: optional i64 batch_size_ptr
-  
+
   // this is used to pass place or places to FE, which could help us call jni
   // only once and can process a batch size data in JAVA-Udaf
   11: optional i64 input_places_ptr
+
+  // for array type about nested column null map
+  12: optional i64 input_array_nulls_buffer_ptr
+
+  // used for array type of nested string column offset
+  13: optional i64 input_array_string_offsets_ptrs
+
+  // for array type about nested column null map when output
+  14: optional i64 output_array_null_ptr
+
+  // used for array type of nested string column offset when output
+  15: optional i64 output_array_string_offsets_ptr
 }
 
 // Contains all interesting statistics from a single 'memory pool' in the JVM.
@@ -515,7 +591,7 @@ enum TLoadJobState {
     LOADING,
     FINISHED,
     CANCELLED
-}   
+}
 
 enum TEtlState {
 	RUNNING,
@@ -535,16 +611,9 @@ enum TTableType {
     HIVE_TABLE,
     ICEBERG_TABLE,
     HUDI_TABLE,
-    JDBC_TABLE
-}
-
-enum TOdbcTableType {
-    MYSQL,
-    ORACLE,
-    POSTGRESQL,
-    SQLSERVER,
-    REDIS,
-    MONGODB
+    JDBC_TABLE,
+    TEST_EXTERNAL_TABLE,
+    MAX_COMPUTE_TABLE,
 }
 
 enum TKeysType {
@@ -563,6 +632,17 @@ struct TBackend {
     1: required string host
     2: required TPort be_port
     3: required TPort http_port
+    4: optional TPort brpc_port
+    5: optional bool is_alive
+    6: optional i64 id
+}
+
+struct TReplicaInfo {
+    1: required string host
+    2: required TPort  be_port
+    3: required TPort  http_port
+    4: required TPort  brpc_port
+    5: required TReplicaId replica_id
 }
 
 struct TResourceInfo {
@@ -583,6 +663,7 @@ enum TFileType {
     FILE_STREAM,    // file content is streaming in the buffer
     FILE_S3,
     FILE_HDFS,
+    FILE_NET,       // read file by network, such as http
 }
 
 struct TTabletCommitInfo {
@@ -590,7 +671,7 @@ struct TTabletCommitInfo {
     2: required i64 backendId
     // Every load job should check if the global dict is valid, if the global dict
     // is invalid then should sent the invalid column names to FE
-    3: optional list<string> invalid_dict_cols  
+    3: optional list<string> invalid_dict_cols
 }
 
 struct TErrorTabletInfo {
@@ -607,6 +688,7 @@ enum TLoadType {
 enum TLoadSourceType {
     RAW,
     KAFKA,
+    MULTI_TABLE,
 }
 
 enum TMergeType {
@@ -617,7 +699,25 @@ enum TMergeType {
 
 enum TSortType {
     LEXICAL,
-    ZORDER, 
+    ZORDER,
+}
+
+enum TMetadataType {
+  ICEBERG,
+  BACKENDS,
+  WORKLOAD_GROUPS,
+  FRONTENDS,
+  CATALOGS,
+  FRONTENDS_DISKS,
+  MATERIALIZED_VIEWS,
+  JOBS,
+  TASKS,
+  QUERIES,
+  WORKLOAD_SCHED_POLICY
+}
+
+enum TIcebergQueryType {
+  SNAPSHOTS
 }
 
 // represent a user identity

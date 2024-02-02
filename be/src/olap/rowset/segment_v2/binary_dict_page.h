@@ -18,24 +18,32 @@
 #pragma once
 
 #include <parallel_hashmap/phmap.h>
+#include <stddef.h>
+#include <stdint.h>
 
-#include <functional>
 #include <memory>
-#include <string>
+#include <vector>
 
-#include "gen_cpp/segment_v2.pb.h"
+#include "common/status.h"
 #include "gutil/hash/string_hash.h"
-#include "olap/column_block.h"
-#include "olap/column_vector.h"
 #include "olap/olap_common.h"
 #include "olap/rowset/segment_v2/binary_plain_page.h"
-#include "olap/rowset/segment_v2/bitshuffle_page.h"
 #include "olap/rowset/segment_v2/common.h"
 #include "olap/rowset/segment_v2/options.h"
-#include "runtime/mem_pool.h"
+#include "olap/rowset/segment_v2/page_builder.h"
+#include "olap/rowset/segment_v2/page_decoder.h"
+#include "util/faststring.h"
+#include "util/slice.h"
+#include "vec/common/arena.h"
+#include "vec/data_types/data_type.h"
 
 namespace doris {
+struct StringRef;
+
 namespace segment_v2 {
+enum EncodingTypePB : int;
+template <FieldType Type>
+class BitShufflePageDecoder;
 
 enum { BINARY_DICT_PAGE_HEADER_SIZE = 4 };
 
@@ -77,7 +85,8 @@ private:
 
     std::unique_ptr<PageBuilder> _data_page_builder;
 
-    std::unique_ptr<BinaryPlainPageBuilder<OLAP_FIELD_TYPE_VARCHAR>> _dict_builder;
+    std::unique_ptr<BinaryPlainPageBuilder<FieldType::OLAP_FIELD_TYPE_VARCHAR>> _dict_builder =
+            nullptr;
 
     EncodingTypePB _encoding_type;
     struct HashOfSlice {
@@ -89,8 +98,8 @@ private:
     phmap::flat_hash_map<Slice, uint32_t, HashOfSlice> _dictionary;
     // used to remember the insertion order of dict keys
     std::vector<Slice> _dict_items;
-    // TODO(zc): rethink about this mem pool
-    MemPool _pool;
+    // TODO(zc): rethink about this arena
+    vectorized::Arena _arena;
     faststring _buffer;
     faststring _first_value;
 
@@ -105,8 +114,6 @@ public:
     Status init() override;
 
     Status seek_to_position_in_page(size_t pos) override;
-
-    Status next_batch(size_t* n, ColumnBlockView* dst) override;
 
     Status next_batch(size_t* n, vectorized::MutableColumnPtr& dst) override;
 
@@ -127,12 +134,10 @@ private:
     Slice _data;
     PageDecoderOptions _options;
     std::unique_ptr<PageDecoder> _data_page_decoder;
-    BinaryPlainPageDecoder<OLAP_FIELD_TYPE_VARCHAR>* _dict_decoder = nullptr;
-    BitShufflePageDecoder<OLAP_FIELD_TYPE_INT>* _bit_shuffle_ptr = nullptr;
+    BinaryPlainPageDecoder<FieldType::OLAP_FIELD_TYPE_VARCHAR>* _dict_decoder = nullptr;
+    BitShufflePageDecoder<FieldType::OLAP_FIELD_TYPE_INT>* _bit_shuffle_ptr = nullptr;
     bool _parsed;
     EncodingTypePB _encoding_type;
-    // use as data buf.
-    std::unique_ptr<ColumnVectorBatch> _batch;
 
     StringRef* _dict_word_info = nullptr;
 };

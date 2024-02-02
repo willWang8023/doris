@@ -24,7 +24,9 @@ import org.apache.doris.nereids.properties.PhysicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
+import org.apache.doris.nereids.trees.plans.SortPhase;
 import org.apache.doris.nereids.trees.plans.algebra.Sort;
+import org.apache.doris.statistics.Statistics;
 
 import com.google.common.collect.ImmutableList;
 
@@ -38,29 +40,36 @@ import java.util.Optional;
 public abstract class AbstractPhysicalSort<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_TYPE> implements Sort {
 
     protected final List<OrderKey> orderKeys;
+    protected final SortPhase phase;
 
     /**
      * Constructor of AbstractPhysicalSort.
      */
     public AbstractPhysicalSort(PlanType type, List<OrderKey> orderKeys,
-            Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
+            SortPhase phase, Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
             CHILD_TYPE child) {
         super(type, groupExpression, logicalProperties, child);
         this.orderKeys = ImmutableList.copyOf(Objects.requireNonNull(orderKeys, "orderKeys can not be null"));
+        this.phase = phase;
     }
 
     /**
      * Constructor of AbstractPhysicalSort.
      */
     public AbstractPhysicalSort(PlanType type, List<OrderKey> orderKeys,
-            Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
-            PhysicalProperties physicalProperties, CHILD_TYPE child) {
-        super(type, groupExpression, logicalProperties, physicalProperties, child);
+            SortPhase phase, Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
+            PhysicalProperties physicalProperties, Statistics statistics, CHILD_TYPE child) {
+        super(type, groupExpression, logicalProperties, physicalProperties, statistics, child);
         this.orderKeys = ImmutableList.copyOf(Objects.requireNonNull(orderKeys, "orderKeys can not be null"));
+        this.phase = phase;
     }
 
     public List<OrderKey> getOrderKeys() {
         return orderKeys;
+    }
+
+    public SortPhase getSortPhase() {
+        return phase;
     }
 
     @Override
@@ -72,7 +81,7 @@ public abstract class AbstractPhysicalSort<CHILD_TYPE extends Plan> extends Phys
             return false;
         }
         AbstractPhysicalSort that = (AbstractPhysicalSort) o;
-        return Objects.equals(orderKeys, that.orderKeys);
+        return phase == that.phase && Objects.equals(orderKeys, that.orderKeys);
     }
 
     @Override

@@ -21,9 +21,12 @@ import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.resource.Tag;
+import org.apache.doris.resource.workloadgroup.WorkloadGroupMgr;
 
 import com.google.common.collect.Sets;
 import com.google.gson.annotations.SerializedName;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -34,12 +37,16 @@ import java.util.Set;
  * Used in
  */
 public class CommonUserProperties implements Writable {
+    private static final Logger LOG = LogManager.getLogger(CommonUserProperties.class);
+
     // The max connections allowed for a user on one FE
     @SerializedName("maxConn")
     private long maxConn = 100;
     // The maximum total number of query instances that the user is allowed to send from this FE
     @SerializedName("maxQueryInstances")
     private long maxQueryInstances = -1;
+    @SerializedName("parallelFragmentExecInstanceNum")
+    private int parallelFragmentExecInstanceNum = -1;
     @SerializedName("sqlBlockRules")
     private String sqlBlockRules = "";
     @SerializedName("cpuResourceLimit")
@@ -50,9 +57,15 @@ public class CommonUserProperties implements Writable {
     // user level exec_mem_limit, if > 0, will overwrite the exec_mem_limit in session variable
     @SerializedName("execMemLimit")
     private long execMemLimit = -1;
-    // user level load_mem_limit, if > 0, will overwrite the load_mem_limit in session variable
-    @SerializedName("loadMemLimit")
-    private long loadMemLimit = -1;
+
+    @SerializedName("queryTimeout")
+    private int queryTimeout = -1;
+
+    @SerializedName("insertTimeout")
+    private int insertTimeout = -1;
+
+    @SerializedName("workloadGroup")
+    private String workloadGroup = WorkloadGroupMgr.DEFAULT_GROUP_NAME;
 
     private String[] sqlBlockRulesSplit = {};
 
@@ -62,6 +75,10 @@ public class CommonUserProperties implements Writable {
 
     long getMaxQueryInstances() {
         return maxQueryInstances;
+    }
+
+    int getParallelFragmentExecInstanceNum() {
+        return parallelFragmentExecInstanceNum;
     }
 
     String getSqlBlockRules() {
@@ -78,6 +95,10 @@ public class CommonUserProperties implements Writable {
 
     void setMaxQueryInstances(long maxQueryInstances) {
         this.maxQueryInstances = maxQueryInstances;
+    }
+
+    void setParallelFragmentExecInstanceNum(int parallelFragmentExecInstanceNum) {
+        this.parallelFragmentExecInstanceNum = parallelFragmentExecInstanceNum;
     }
 
     void setSqlBlockRules(String sqlBlockRules) {
@@ -114,12 +135,31 @@ public class CommonUserProperties implements Writable {
         this.execMemLimit = execMemLimit;
     }
 
-    public long getLoadMemLimit() {
-        return loadMemLimit;
+    public int getQueryTimeout() {
+        return queryTimeout;
     }
 
-    public void setLoadMemLimit(long loadMemLimit) {
-        this.loadMemLimit = loadMemLimit;
+    public void setQueryTimeout(int timeout) {
+        if (timeout <= 0) {
+            LOG.warn("Setting 0 query timeout", new RuntimeException(""));
+        }
+        this.queryTimeout = timeout;
+    }
+
+    public int getInsertTimeout() {
+        return insertTimeout;
+    }
+
+    public void setInsertTimeout(int insertTimeout) {
+        this.insertTimeout = insertTimeout;
+    }
+
+    public String getWorkloadGroup() {
+        return workloadGroup;
+    }
+
+    public void setWorkloadGroup(String workloadGroup) {
+        this.workloadGroup = workloadGroup;
     }
 
     public static CommonUserProperties read(DataInput in) throws IOException {

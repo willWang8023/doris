@@ -61,11 +61,20 @@ public class BooleanLiteral extends Literal {
 
     @Override
     public String toString() {
-        return Boolean.valueOf(value).toString().toUpperCase();
+        return Boolean.toString(value).toUpperCase();
     }
 
     @Override
     public LiteralExpr toLegacyLiteral() {
         return new BoolLiteral(value);
+    }
+
+    @Override
+    public double getDouble() {
+        if (value) {
+            return 1.0;
+        } else {
+            return 0;
+        }
     }
 }

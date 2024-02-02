@@ -17,7 +17,8 @@
 
 #pragma once
 
-#include <pthread.h>
+#include <stdint.h>
+#include <time.h>
 
 #include <mutex>
 #include <string>
@@ -25,22 +26,24 @@
 
 #include "common/status.h"
 #include "gutil/ref_counted.h"
-#include "util/thread.h"
-#include "util/uid_util.h"
+#include "util/countdown_latch.h"
+#include "util/once.h"
 
 namespace doris {
 
 class TUniqueId;
 class ExecEnv;
+class Thread;
 
 // In every directory, '.trash' directory is used to save data need to delete
 // daemon thread is check no used directory to delete
 class LoadPathMgr {
 public:
     LoadPathMgr(ExecEnv* env);
-    ~LoadPathMgr();
+    ~LoadPathMgr() = default;
 
     Status init();
+    void stop();
 
     Status allocate_dir(const std::string& db, const std::string& label, std::string* prefix);
 
@@ -58,7 +61,7 @@ private:
     void clean();
     void process_path(time_t now, const std::string& path, int64_t reserve_hours);
 
-    ExecEnv* _exec_env;
+    ExecEnv* _exec_env = nullptr;
     std::mutex _lock;
     std::vector<std::string> _path_vec;
     int _idx;
@@ -68,6 +71,7 @@ private:
     uint32_t _error_path_next_shard;
     CountDownLatch _stop_background_threads_latch;
     scoped_refptr<Thread> _clean_thread;
+    DorisCallOnce<Status> _init_once;
 };
 
 } // namespace doris

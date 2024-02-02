@@ -144,11 +144,15 @@ public class Diagnoser {
                 versionErr.append("Replica on backend " + replica.getBackendId() + "'s version ("
                         + replica.getVersion() + ") does not equal"
                         + " to partition visible version (" + partition.getVisibleVersion() + ")");
+            } else if (replica.getLastFailedVersion() != -1) {
+                versionErr.append("Replica on backend " + replica.getBackendId() + "'s last failed version is "
+                        + replica.getLastFailedVersion());
             }
             // status
-            if (!replica.isAlive()) {
+            if (!replica.isAlive() || replica.isUserDrop()) {
                 statusErr.append("Replica on backend " + replica.getBackendId() + "'s state is " + replica.getState()
-                        + ", and is bad: " + (replica.isBad() ? "Yes" : "No"));
+                        + ", and is bad: " + (replica.isBad() ? "Yes" : "No")
+                        + ", and is going to drop: " + (replica.isUserDrop() ? "Yes" : "No"));
             }
             if (replica.getVersionCount() > Config.min_version_count_indicate_replica_compaction_too_slow) {
                 compactionErr.append("Replica on backend " + replica.getBackendId() + "'s version count is too high: "

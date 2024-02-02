@@ -7,7 +7,8 @@
 #include <cstdint>
 
 #include "gutil/atomicops.h"
-#include "gutil/macros.h"
+// IWYU pragma: no_include <butil/macros.h>
+#include "gutil/macros.h" // IWYU pragma: keep
 
 #ifndef BASE_EXPORT
 #define BASE_EXPORT
@@ -159,7 +160,7 @@ public:
         ~Check() {}
 
     private:
-        ThreadCollisionWarner* warner_;
+        ThreadCollisionWarner* warner_ = nullptr;
 
         DISALLOW_COPY_AND_ASSIGN(Check);
     };
@@ -173,7 +174,7 @@ public:
         ~ScopedCheck() { warner_->Leave(); }
 
     private:
-        ThreadCollisionWarner* warner_;
+        ThreadCollisionWarner* warner_ = nullptr;
 
         DISALLOW_COPY_AND_ASSIGN(ScopedCheck);
     };
@@ -189,7 +190,7 @@ public:
         ~ScopedRecursiveCheck() { warner_->Leave(); }
 
     private:
-        ThreadCollisionWarner* warner_;
+        ThreadCollisionWarner* warner_ = nullptr;
 
         DISALLOW_COPY_AND_ASSIGN(ScopedRecursiveCheck);
     };
@@ -217,7 +218,7 @@ private:
 
     // Here only for class unit tests purpose, during the test I need to not
     // DCHECK but notify the collision with something else.
-    AsserterBase* asserter_;
+    AsserterBase* asserter_ = nullptr;
 
     DISALLOW_COPY_AND_ASSIGN(ThreadCollisionWarner);
 };

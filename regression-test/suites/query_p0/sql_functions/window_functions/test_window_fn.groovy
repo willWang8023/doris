@@ -14,14 +14,14 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-suite("test_window_fn") {
+suite("test_window_fn", "arrow_flight_sql") {
     def tbName1 = "empsalary"
     def tbName2 = "tenk1"
     sql """ DROP TABLE IF EXISTS ${tbName1} """
     sql """ DROP TABLE IF EXISTS ${tbName2} """
 
     sql """
-        CREATE TABLE ${tbName1}
+        CREATE TABLE IF NOT EXISTS ${tbName1}
         (
             `depname` varchar(20) NULL COMMENT "",
             `empno`  bigint NULL COMMENT "",
@@ -38,7 +38,7 @@ suite("test_window_fn") {
         );
      """
     sql """
-        CREATE TABLE ${tbName2} (
+        CREATE TABLE IF NOT EXISTS ${tbName2} (
         stringu1 varchar(20) NULL COMMENT "",
         stringu2 varchar(20) NULL COMMENT "",
         string4 varchar(20) NULL COMMENT "",
@@ -117,54 +117,59 @@ suite("test_window_fn") {
 
     // first_value
     qt_sql """
-        select first_value(salary) over(order by salary range between UNBOUNDED preceding  and UNBOUNDED following), lead(salary, 1, 0) over(order by salary) as l, salary from ${tbName1} order by l, salary;
+        select first_value(salary) over(order by salary range between UNBOUNDED preceding  and UNBOUNDED following), lead(salary, 1, 0) over(order by salary) as l, salary from ${tbName1} order by 1, l, salary;
     """
     qt_sql """
-        select first_value(salary) over(order by enroll_date range between unbounded preceding and UNBOUNDED following), last_value(salary) over(order by enroll_date range between unbounded preceding and UNBOUNDED following), salary, enroll_date from ${tbName1} order by salary, enroll_date;
+        select
+            first_value(salary) over(order by enroll_date range between unbounded preceding and UNBOUNDED following)
+            , last_value(salary) over(order by enroll_date range between unbounded preceding and UNBOUNDED following)
+            , salary, enroll_date
+        from ${tbName1}
+        order by 1, 2, salary, enroll_date;
     """
     qt_sql """
-        SELECT first_value(ten) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT first_value(ten) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10 order by 1, four, ten;
     """
     qt_sql """
         SELECT first_value(unique1) over (order by four range between current row and unbounded following),  
-        last_value(unique1) over (order by four range between current row and unbounded following), unique1, four 
-        FROM ${tbName2} WHERE unique1 < 10 order by unique1, four;
+        last_value(unique1) over (order by four, unique1 desc range between current row and unbounded following), unique1, four
+        FROM ${tbName2} WHERE unique1 < 10 order by 1, 2, unique1, four;
     """
 
     // last_value
     qt_sql """
-        select last_value(salary) over(order by salary range between UNBOUNDED preceding and UNBOUNDED following), lag(salary, 1, 0) over(order by salary) as l, salary from ${tbName1} order by l, salary;
+        select last_value(salary) over(order by salary range between UNBOUNDED preceding and UNBOUNDED following), lag(salary, 1, 0) over(order by salary) as l, salary from ${tbName1} order by 1, l, salary;
     """
     qt_sql """
-        SELECT last_value(ten) OVER (ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT last_value(ten) OVER (ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10 order by 1, 2, 3;
     """
     qt_sql """
         SELECT last_value(ten) OVER (PARTITION BY four ORDER BY ten), ten, four FROM
-        (SELECT * FROM ${tbName2} WHERE unique2 < 10 ORDER BY four, ten)s ORDER BY four, ten;
+        (SELECT * FROM ${tbName2} WHERE unique2 < 10 ORDER BY four, ten)s ORDER BY 1, 2, four, ten;
     """
     qt_sql """
         SELECT four, ten, sum(ten) over (partition by four order by ten), last_value(ten) over (partition by four order by ten) 
-        FROM (select distinct ten, four from ${tbName2}) ss order by four, ten;
+        FROM (select distinct ten, four from ${tbName2}) ss order by four, ten, 3, 4;
     """
     qt_sql """
         SELECT four, ten, sum(ten) over (partition by four order by ten range between unbounded preceding and current row), 
         last_value(ten) over (partition by four order by ten range between unbounded preceding and current row) 
-        FROM (select distinct ten, four from ${tbName2}) ss order by four, ten;
+        FROM (select distinct ten, four from ${tbName2}) ss order by four, ten, 3, 4;
     """
     qt_sql """
         SELECT four, ten, sum(ten) over (partition by four order by ten range between unbounded preceding and unbounded following), 
         last_value(ten) over (partition by four order by ten range between unbounded preceding and unbounded following) 
-        FROM (select distinct ten, four from ${tbName2}) ss order by four, ten;
+        FROM (select distinct ten, four from ${tbName2}) ss order by four, ten, 3, 4;
     """
     qt_sql """
         SELECT four, ten/4 as two, sum(ten/4) over (partition by four order by ten/4 range between unbounded preceding and current row), 
         last_value(ten/4) over (partition by four order by ten/4 range between unbounded preceding and current row) 
-        FROM (select distinct ten, four from ${tbName2}) ss order by four, two;
+        FROM (select distinct ten, four from ${tbName2}) ss order by 1, 2, four, two;
     """
     qt_sql """
         SELECT four, ten/4 as two, sum(ten/4) over (partition by four order by ten/4 rows between unbounded preceding and current row), 
         last_value(ten/4) over (partition by four order by ten/4 rows between unbounded preceding and current row) 
-        FROM (select distinct ten, four from ${tbName2}) ss order by four, two;
+        FROM (select distinct ten, four from ${tbName2}) ss order by four, two, 3, 4;
     """
 
 
@@ -172,7 +177,7 @@ suite("test_window_fn") {
     qt_sql """
         SELECT empno, depname, salary, bonus, depadj, MIN(bonus) OVER (ORDER BY empno), MAX(depadj) OVER () 
         FROM( SELECT *, CASE WHEN enroll_date < '2008-01-01' THEN 2008 - extract(YEAR FROM enroll_date) END * 500 AS bonus,         
-        CASE WHEN AVG(salary) OVER (PARTITION BY depname) < salary THEN 200 END AS depadj FROM ${tbName1})s order by empno;
+        CASE WHEN AVG(salary) OVER (PARTITION BY depname) < salary THEN 200 END AS depadj FROM ${tbName1})s order by empno, depname, salary, bonus, depadj;
     """
     qt_sql """
         select max(enroll_date) over (order by enroll_date range between UNBOUNDED preceding and UNBOUNDED following), salary, enroll_date from ${tbName1} order by salary, enroll_date;
@@ -190,7 +195,7 @@ suite("test_window_fn") {
     """
     qt_sql """
         SELECT depname, empno, salary, rank() OVER (PARTITION BY depname ORDER BY salary, empno) 
-        FROM ${tbName1} ORDER BY rank() OVER (PARTITION BY depname ORDER BY salary, empno);
+        FROM ${tbName1} ORDER BY rank() OVER (PARTITION BY depname ORDER BY salary, empno), depname;
     """
     qt_sql """
         SELECT sum(salary) as s, row_number() OVER (ORDER BY depname)  as r, sum(sum(salary)) OVER (ORDER BY depname DESC) as ss 
@@ -207,10 +212,10 @@ suite("test_window_fn") {
         SELECT row_number() OVER (ORDER BY unique2) FROM ${tbName2} WHERE unique2 < 10;
     """
     qt_sql """
-        SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM ${tbName2} WHERE unique2 < 10 order by four, ten;
     """
     qt_sql """
-        SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10 order by four, ten;
     """
     qt_sql """
         select ten,   sum(unique1) + sum(unique2) as res,   rank() over (order by sum(unique1) + sum(unique2)) as rank from ${tbName2} group by ten order by ten;
@@ -256,14 +261,14 @@ suite("test_window_fn") {
         SELECT count(1) OVER (PARTITION BY four) as c, four FROM (SELECT * FROM ${tbName2} WHERE two = 1)s WHERE unique2 < 10 order by c, four;
     """
     qt_sql """
-        SELECT avg(four) OVER (PARTITION BY four ORDER BY thousand / 100) FROM ${tbName2} WHERE unique2 < 10;
+        SELECT avg(four) OVER (PARTITION BY four ORDER BY thousand / 100) FROM ${tbName2} WHERE unique2 < 10 order by four;
     """
     qt_sql """
         SELECT count(1) OVER (PARTITION BY four) FROM (SELECT * FROM ${tbName2} WHERE FALSE)s;
     """
     qt_sql """
         SELECT sum(unique1) over (order by four range between current row and unbounded following) as s, unique1, four 
-        FROM ${tbName2} WHERE unique1 < 10 order by s;
+        FROM ${tbName2} WHERE unique1 < 10 order by s, unique1;
     """
     qt_sql """
         SELECT count() OVER () FROM ${tbName2} limit 5;
@@ -278,19 +283,19 @@ suite("test_window_fn") {
 
     // lag
     qt_sql """
-        SELECT lag(ten, 1, 0) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT lag(ten, 1, 0) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10 order by four, ten;
     """
 
 
     // lead
     qt_sql """
-        SELECT lead(ten, 1, 0) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT lead(ten, 1, 0) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10 order by four, ten;
     """
     qt_sql """
-        SELECT lead(ten * 2, 1, 0) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT lead(ten * 2, 1, 0) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10 order by four, ten;
     """
     qt_sql """
-        SELECT lead(ten * 2, 1, -1) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10;
+        SELECT lead(ten * 2, 1, -1) OVER (PARTITION BY four ORDER BY ten), ten, four FROM ${tbName2} WHERE unique2 < 10 order by four, ten;
     """
 
 
@@ -320,6 +325,73 @@ suite("test_window_fn") {
 
     sql "DROP TABLE IF EXISTS ${tbName1};"
     sql "DROP TABLE IF EXISTS ${tbName2};"
+
+    sql """ DROP TABLE IF EXISTS example_window_tb """
+    sql """
+        CREATE TABLE IF NOT EXISTS example_window_tb (
+        u_id int NULL COMMENT "",
+        u_city varchar(20) NULL COMMENT "",
+        u_salary int NULL COMMENT ""
+    ) ENGINE=OLAP
+    DUPLICATE KEY(`u_id`, `u_city`, `u_salary`)
+        COMMENT ""
+        DISTRIBUTED BY HASH(`u_id`, `u_city`, `u_salary`) BUCKETS 1
+        PROPERTIES (
+        "replication_allocation" = "tag.location.default: 1",
+        "in_memory" = "false",
+        "storage_format" = "V2"
+    );
+    """
+
+    sql """
+        INSERT INTO example_window_tb(u_id, u_city, u_salary) VALUES
+        ('1',  'gz', 30000),
+        ('2',  'gz', 25000),
+        ('3',  'gz', 17000),
+        ('4',  'gz', 32000),
+        ('5',  'sz', 40000),
+        ('6',  'sz', 27000),
+        ('7',  'sz', 27000),
+        ('8',  'sz', 33000);
+     """
+
+    qt_sql_window_last_value """
+        select u_id, u_city, u_salary,
+        last_value(u_salary) over (partition by u_city order by u_id rows between unbounded preceding and 1 preceding) last_value_test
+        from example_window_tb order by u_id;
+    """
+
+    sql """
+        create view v as select row_number() over(partition by u_city order by u_salary) as wf from example_window_tb    
+    """
+
+    sql """
+        drop view v
+    """
+
+    sql "DROP TABLE IF EXISTS example_window_tb;"
+
+    sql """
+        CREATE TABLE IF NOT EXISTS test_window_in_agg
+        (
+            `c1`  int ,
+            `c2`  int ,
+            `c3`  int
+        )
+        ENGINE=OLAP
+        DUPLICATE KEY(`c1`)
+        COMMENT ""
+        DISTRIBUTED BY HASH(`c1`) BUCKETS 1
+        PROPERTIES (
+        "replication_allocation" = "tag.location.default: 1",
+        "in_memory" = "false",
+        "storage_format" = "V2"
+        );
+        """
+    sql """set enable_nereids_planner=true;"""
+    sql """SELECT SUM(MAX(c1) OVER (PARTITION BY c2, c3)) FROM  test_window_in_agg;"""
+
+    sql "DROP TABLE IF EXISTS test_window_in_agg;"
 }
 
 

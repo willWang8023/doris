@@ -21,9 +21,15 @@ import org.apache.doris.nereids.memo.GroupExpression;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.Slot;
+import org.apache.doris.nereids.trees.plans.AbstractPlan;
+import org.apache.doris.nereids.trees.plans.BlockFuncDepsPropagation;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
+import org.apache.doris.qe.ConnectContext;
+import org.apache.doris.qe.StmtExecutor;
+
+import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Optional;
@@ -31,70 +37,77 @@ import java.util.Optional;
 /**
  * All DDL and DML commands' super class.
  */
-public interface Command extends LogicalPlan {
+public abstract class Command extends AbstractPlan implements LogicalPlan, BlockFuncDepsPropagation {
+
+    protected Command(PlanType type) {
+        super(type, Optional.empty(), Optional.empty(), null, ImmutableList.of());
+    }
+
+    public abstract void run(ConnectContext ctx, StmtExecutor executor) throws Exception;
 
     @Override
-    default Optional<GroupExpression> getGroupExpression() {
+    public Optional<GroupExpression> getGroupExpression() {
         throw new RuntimeException("Command do not implement getGroupExpression");
     }
 
     @Override
-    default List<Plan> children() {
+    public List<Plan> children() {
         throw new RuntimeException("Command do not implement children");
     }
 
     @Override
-    default Plan child(int index) {
+    public Plan child(int index) {
         throw new RuntimeException("Command do not implement child");
     }
 
     @Override
-    default int arity() {
+    public int arity() {
         throw new RuntimeException("Command do not implement arity");
     }
 
     @Override
-    default Plan withChildren(List<Plan> children) {
+    public Plan withChildren(List<Plan> children) {
         throw new RuntimeException("Command do not implement withChildren");
     }
 
     @Override
-    default PlanType getType() {
+    public PlanType getType() {
         throw new RuntimeException("Command do not implement getType");
     }
 
     @Override
-    default List<? extends Expression> getExpressions() {
+    public List<? extends Expression> getExpressions() {
         throw new RuntimeException("Command do not implement getExpressions");
     }
 
     @Override
-    default LogicalProperties getLogicalProperties() {
+    public LogicalProperties getLogicalProperties() {
         throw new RuntimeException("Command do not implement getLogicalProperties");
     }
 
     @Override
-    default boolean canBind() {
+    public Plan withGroupExprLogicalPropChildren(Optional<GroupExpression> groupExpression,
+            Optional<LogicalProperties> logicalProperties, List<Plan> children) {
+        throw new RuntimeException("Command do not implement withGroupExprLogicalPropChildren");
+    }
+
+    @Override
+    public boolean canBind() {
         throw new RuntimeException("Command do not implement canResolve");
     }
 
     @Override
-    default List<Slot> getOutput() {
+    public List<Slot> getOutput() {
         throw new RuntimeException("Command do not implement getOutput");
     }
 
     @Override
-    default String treeString() {
+    public String treeString() {
         throw new RuntimeException("Command do not implement treeString");
     }
 
     @Override
-    default Plan withGroupExpression(Optional<GroupExpression> groupExpression) {
+    public Plan withGroupExpression(Optional<GroupExpression> groupExpression) {
         throw new RuntimeException("Command do not implement withGroupExpression");
-    }
-
-    @Override
-    default Plan withLogicalProperties(Optional<LogicalProperties> logicalProperties) {
-        throw new RuntimeException("Command do not implement withLogicalProperties");
     }
 }

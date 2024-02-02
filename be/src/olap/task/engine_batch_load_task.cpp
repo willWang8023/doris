@@ -17,50 +17,67 @@
 
 #include "olap/task/engine_batch_load_task.h"
 
+#include <fmt/format.h>
+#include <gen_cpp/AgentService_types.h>
+#include <gen_cpp/Metrics_types.h>
+#include <gen_cpp/Types_types.h>
 #include <pthread.h>
 #include <thrift/protocol/TDebugProtocol.h>
 
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
-#include <iostream>
-#include <sstream>
+#include <list>
 #include <string>
+#include <system_error>
 
 #include "boost/lexical_cast.hpp"
-#include "gen_cpp/AgentService_types.h"
+#include "common/config.h"
+#include "common/logging.h"
 #include "http/http_client.h"
+#include "olap/data_dir.h"
 #include "olap/olap_common.h"
 #include "olap/olap_define.h"
 #include "olap/push_handler.h"
 #include "olap/storage_engine.h"
 #include "olap/tablet.h"
+#include "olap/tablet_manager.h"
+#include "runtime/memory/mem_tracker_limiter.h"
 #include "runtime/thread_context.h"
 #include "util/doris_metrics.h"
 #include "util/pretty_printer.h"
+#include "util/runtime_profile.h"
+#include "util/stopwatch.hpp"
 
 using apache::thrift::ThriftDebugString;
-using std::list;
 using std::string;
 using std::vector;
 
 namespace doris {
+namespace {
+constexpr uint32_t PUSH_MAX_RETRY = 1;
+constexpr uint32_t MAX_RETRY = 3;
+constexpr uint32_t DEFAULT_DOWNLOAD_TIMEOUT = 3600;
+} // namespace
 
-EngineBatchLoadTask::EngineBatchLoadTask(TPushReq& push_req, std::vector<TTabletInfo>* tablet_infos)
-        : _push_req(push_req), _tablet_infos(tablet_infos) {
+using namespace ErrorCode;
+
+EngineBatchLoadTask::EngineBatchLoadTask(StorageEngine& engine, TPushReq& push_req,
+                                         std::vector<TTabletInfo>* tablet_infos)
+        : _engine(engine), _push_req(push_req), _tablet_infos(tablet_infos) {
     _mem_tracker = std::make_shared<MemTrackerLimiter>(
-            -1,
+            MemTrackerLimiter::Type::LOAD,
             fmt::format("EngineBatchLoadTask#pushType={}:tabletId={}", _push_req.push_type,
-                        std::to_string(_push_req.tablet_id)),
-            StorageEngine::instance()->batch_load_mem_tracker());
+                        std::to_string(_push_req.tablet_id)));
 }
 
-EngineBatchLoadTask::~EngineBatchLoadTask() {}
+EngineBatchLoadTask::~EngineBatchLoadTask() = default;
 
 Status EngineBatchLoadTask::execute() {
-    SCOPED_ATTACH_TASK(_mem_tracker, ThreadContext::TaskType::STORAGE);
+    SCOPED_ATTACH_TASK(_mem_tracker);
     Status status;
-    if (_push_req.push_type == TPushType::LOAD || _push_req.push_type == TPushType::LOAD_V2) {
+    if (_push_req.push_type == TPushType::LOAD_V2) {
         RETURN_IF_ERROR(_init());
         uint32_t retry_time = 0;
         while (retry_time < PUSH_MAX_RETRY) {
@@ -89,14 +106,14 @@ Status EngineBatchLoadTask::_init() {
 
     // Check replica exist
     TabletSharedPtr tablet;
-    tablet = StorageEngine::instance()->tablet_manager()->get_tablet(_push_req.tablet_id);
+    tablet = _engine.tablet_manager()->get_tablet(_push_req.tablet_id);
     if (tablet == nullptr) {
         return Status::InvalidArgument("Could not find tablet {}", _push_req.tablet_id);
     }
 
     // check disk capacity
-    if (_push_req.push_type == TPushType::LOAD || _push_req.push_type == TPushType::LOAD_V2) {
-        if (tablet->data_dir()->reach_capacity_limit(_push_req.__isset.http_file_size)) {
+    if (_push_req.push_type == TPushType::LOAD_V2) {
+        if (tablet->data_dir()->reach_capacity_limit(_push_req.http_file_size)) {
             return Status::IOError("Disk does not have enough capacity");
         }
     }
@@ -233,7 +250,7 @@ Status EngineBatchLoadTask::_process() {
         status = _push(_push_req, _tablet_infos);
         time_t push_finish = time(nullptr);
         LOG(INFO) << "Push finish, cost time: " << (push_finish - push_begin);
-        if (status.precise_code() == OLAP_ERR_PUSH_TRANSACTION_ALREADY_EXIST) {
+        if (status.is<PUSH_TRANSACTION_ALREADY_EXIST>()) {
             status = Status::OK();
         }
     }
@@ -260,20 +277,15 @@ Status EngineBatchLoadTask::_push(const TPushReq& request,
         return Status::InvalidArgument("invalid tablet_info_vec which is nullptr");
     }
 
-    TabletSharedPtr tablet =
-            StorageEngine::instance()->tablet_manager()->get_tablet(request.tablet_id);
+    TabletSharedPtr tablet = _engine.tablet_manager()->get_tablet(request.tablet_id);
     if (tablet == nullptr) {
         DorisMetrics::instance()->push_requests_fail_total->increment(1);
         return Status::InternalError("could not find tablet {}", request.tablet_id);
     }
 
-    PushType type = PUSH_NORMAL;
-    if (request.push_type == TPushType::LOAD_V2) {
-        type = PUSH_NORMAL_V2;
-    }
-
+    PushType type = PushType::PUSH_NORMAL_V2;
     int64_t duration_ns = 0;
-    PushHandler push_handler;
+    PushHandler push_handler(_engine);
     if (!request.__isset.transaction_id) {
         return Status::InvalidArgument("transaction_id is not set");
     }
@@ -284,12 +296,12 @@ Status EngineBatchLoadTask::_push(const TPushReq& request,
 
     if (!res.ok()) {
         LOG(WARNING) << "failed to push delta, transaction_id=" << request.transaction_id
-                     << ", tablet=" << tablet->full_name()
+                     << ", tablet=" << tablet->tablet_id()
                      << ", cost=" << PrettyPrinter::print(duration_ns, TUnit::TIME_NS);
         DorisMetrics::instance()->push_requests_fail_total->increment(1);
     } else {
         LOG(INFO) << "succeed to push delta, transaction_id=" << request.transaction_id
-                  << ", tablet=" << tablet->full_name()
+                  << ", tablet=" << tablet->tablet_id()
                   << ", cost=" << PrettyPrinter::print(duration_ns, TUnit::TIME_NS);
         DorisMetrics::instance()->push_requests_success_total->increment(1);
         DorisMetrics::instance()->push_request_duration_us->increment(duration_ns / 1000);
@@ -311,18 +323,17 @@ Status EngineBatchLoadTask::_delete_data(const TPushReq& request,
     }
 
     // 1. Get all tablets with same tablet_id
-    TabletSharedPtr tablet =
-            StorageEngine::instance()->tablet_manager()->get_tablet(request.tablet_id);
+    TabletSharedPtr tablet = _engine.tablet_manager()->get_tablet(request.tablet_id);
     if (tablet == nullptr) {
         return Status::InternalError("could not find tablet {}", request.tablet_id);
     }
 
     // 2. Process delete data by push interface
-    PushHandler push_handler;
+    PushHandler push_handler(_engine);
     if (!request.__isset.transaction_id) {
         return Status::InvalidArgument("transaction_id is not set");
     }
-    res = push_handler.process_streaming_ingestion(tablet, request, PUSH_FOR_DELETE,
+    res = push_handler.process_streaming_ingestion(tablet, request, PushType::PUSH_FOR_DELETE,
                                                    tablet_info_vec);
     if (!res.ok()) {
         DorisMetrics::instance()->delete_requests_failed->increment(1);

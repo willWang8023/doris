@@ -27,6 +27,7 @@ import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
+import org.apache.doris.common.util.InternalDatabaseUtil;
 import org.apache.doris.common.util.PropertyAnalyzer;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.mysql.privilege.PrivPredicate;
@@ -67,7 +68,8 @@ public class AlterTableStmt extends DdlStmt {
         tbl.analyze(analyzer);
         // disallow external catalog
         Util.prohibitExternalCatalog(tbl.getCtl(), this.getClass().getSimpleName());
-        if (!Env.getCurrentEnv().getAuth().checkTblPriv(ConnectContext.get(), tbl.getDb(), tbl.getTbl(),
+        InternalDatabaseUtil.checkDatabase(tbl.getDb(), ConnectContext.get());
+        if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(ConnectContext.get(), tbl.getDb(), tbl.getTbl(),
                 PrivPredicate.ALTER)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_TABLEACCESS_DENIED_ERROR, "ALTER TABLE",
                     ConnectContext.get().getQualifiedUser(),
@@ -78,6 +80,9 @@ public class AlterTableStmt extends DdlStmt {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_ALTER_OPERATION);
         }
         for (AlterClause op : ops) {
+            if (op instanceof AlterTableClause) {
+                ((AlterTableClause) op).setTableName(tbl);
+            }
             op.analyze(analyzer);
         }
     }

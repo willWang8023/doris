@@ -21,6 +21,7 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
+import org.apache.doris.common.util.NetUtils;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.system.Backend;
@@ -39,7 +40,8 @@ public class AdminCancelRebalanceDiskStmt extends DdlStmt {
         ImmutableMap<Long, Backend> backendsInfo = Env.getCurrentSystemInfo().getIdToBackend();
         Map<String, Long> backendsID = new HashMap<String, Long>();
         for (Backend backend : backendsInfo.values()) {
-            backendsID.put(backend.getHost() + ":" + backend.getHeartbeatPort(), backend.getId());
+            backendsID.put(NetUtils.getHostPortInAccessibleFormat(backend.getHost(), backend.getHeartbeatPort()),
+                    backend.getId());
         }
         if (backends == null) {
             for (Backend backend : backendsInfo.values()) {
@@ -61,7 +63,7 @@ public class AdminCancelRebalanceDiskStmt extends DdlStmt {
 
     @Override
     public void analyze(Analyzer analyzer) throws AnalysisException {
-        if (!Env.getCurrentEnv().getAuth().checkGlobalPriv(ConnectContext.get(), PrivPredicate.ADMIN)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkGlobalPriv(ConnectContext.get(), PrivPredicate.ADMIN)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR, "ADMIN");
         }
     }

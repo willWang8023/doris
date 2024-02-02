@@ -15,33 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
+#include "runtime/snapshot_loader.h"
+
+#include <gtest/gtest-message.h>
+#include <gtest/gtest-test-part.h>
 
 #include <filesystem>
 
+#include "gtest/gtest_pred_impl.h"
+#include "olap/storage_engine.h"
 #include "runtime/exec_env.h"
-#include "util/cpu_info.h"
-
-#define private public // hack compiler
-#define protected public
-
-#include "runtime/snapshot_loader.h"
 
 namespace doris {
 
-class SnapshotLoaderTest : public testing::Test {
-public:
-    SnapshotLoaderTest() {}
-
-private:
-    ExecEnv* _exec_env;
-};
-
-TEST_F(SnapshotLoaderTest, NormalCase) {
-    SnapshotLoader loader(_exec_env, 1L, 2L);
-
-    EXPECT_TRUE(loader._end_with("abt.dat", ".dat"));
-    EXPECT_FALSE(loader._end_with("abt.dat", ".da"));
+TEST(SnapshotLoaderTest, NormalCase) {
+    StorageEngine engine({});
+    SnapshotLoader loader(engine, ExecEnv::GetInstance(), 1L, 2L);
 
     int64_t tablet_id = 0;
     int32_t schema_hash = 0;

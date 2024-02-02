@@ -15,12 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
-#include <time.h>
-
+#include <iomanip>
 #include <string>
+#include <vector>
 
+#include "common/status.h"
 #include "function_test_util.h"
+#include "gtest/gtest_pred_impl.h"
+#include "testutil/any_type.h"
+#include "vec/core/types.h"
+#include "vec/data_types/data_type_date_time.h"
+#include "vec/data_types/data_type_nullable.h"
+#include "vec/data_types/data_type_number.h"
+#include "vec/data_types/data_type_string.h"
 
 namespace doris::vectorized {
 
@@ -29,7 +36,7 @@ TEST(IfNullTest, Int_Test) {
     InputTypeSet input_types = {TypeIndex::Int32, TypeIndex::Int32};
     DataSet data_set = {{{4, 10}, 4}, {{-4, 10}, -4}, {{Null(), 5}, 5}};
 
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 TEST(NvlTest, Int_Test) {
@@ -37,7 +44,7 @@ TEST(NvlTest, Int_Test) {
     InputTypeSet input_types = {TypeIndex::Int32, TypeIndex::Int32};
     DataSet data_set = {{{4, 10}, 4}, {{-4, 10}, -4}, {{Null(), 5}, 5}};
 
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 TEST(IfNullTest, Float_Test) {
@@ -45,7 +52,7 @@ TEST(IfNullTest, Float_Test) {
     InputTypeSet input_types = {TypeIndex::Float64, TypeIndex::Float64};
     DataSet data_set = {{{4.0, 10.0}, 4.0}, {{-4.0, 10.0}, -4.0}, {{Null(), 5.0}, 5.0}};
 
-    check_function<DataTypeFloat64, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeFloat64, true>(func_name, input_types, data_set));
 }
 
 TEST(IfNullTest, String_Test) {
@@ -55,7 +62,7 @@ TEST(IfNullTest, String_Test) {
                         {{std::string("hello"), std::string("10.0")}, std::string("hello")},
                         {{Null(), std::string("world")}, std::string("world")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(IfNullTest, String_Int_Test) {
@@ -66,7 +73,7 @@ TEST(IfNullTest, String_Int_Test) {
                         {{Null(), std::string("2021-10-24 13:00:01")},
                          str_to_date_time("2021-10-24 13:00:01")}};
 
-    check_function<DataTypeDateTime, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeDateTime, true>(func_name, input_types, data_set));
 }
 
 } // namespace doris::vectorized

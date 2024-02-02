@@ -21,17 +21,16 @@
 package org.apache.doris.analysis;
 
 import org.apache.doris.catalog.Env;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.FeMetaVersion;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
-import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.persist.gson.GsonUtils;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.gson.annotations.SerializedName;
 
@@ -39,7 +38,6 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.util.Objects;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class TableName implements Writable {
@@ -52,6 +50,21 @@ public class TableName implements Writable {
 
     public TableName() {
 
+    }
+
+    public TableName(String alias) {
+        String[] parts = alias.split("\\.");
+        Preconditions.checkArgument(parts.length > 0, "table name can't be empty");
+        tbl = parts[parts.length - 1];
+        if (Env.isStoredTableNamesLowerCase() && !Strings.isNullOrEmpty(tbl)) {
+            tbl = tbl.toLowerCase();
+        }
+        if (parts.length >= 2) {
+            db = parts[parts.length - 2];
+        }
+        if (parts.length >= 3) {
+            ctl = parts[parts.length - 3];
+        }
     }
 
     public TableName(String ctl, String db, String tbl) {
@@ -70,19 +83,11 @@ public class TableName implements Writable {
                 ctl = InternalCatalog.INTERNAL_CATALOG_NAME;
             }
         }
-        if (!ctl.equals(InternalCatalog.INTERNAL_CATALOG_NAME)) {
-            Util.checkCatalogEnabled();
-        }
         if (Strings.isNullOrEmpty(db)) {
             db = analyzer.getDefaultDb();
             if (Strings.isNullOrEmpty(db)) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
             }
-        } else {
-            if (Strings.isNullOrEmpty(analyzer.getClusterName())) {
-                ErrorReport.reportAnalysisException(ErrorCode.ERR_CLUSTER_NAME_NULL);
-            }
-            db = ClusterNamespace.getFullName(analyzer.getClusterName(), db);
         }
 
         if (Strings.isNullOrEmpty(tbl)) {
@@ -110,6 +115,10 @@ public class TableName implements Writable {
         return tbl;
     }
 
+    public void setTbl(String tbl) {
+        this.tbl = tbl;
+    }
+
     public boolean isEmpty() {
         return tbl.isEmpty();
     }
@@ -127,19 +136,16 @@ public class TableName implements Writable {
      */
     public String[] tableAliases() {
         if (ctl == null || ctl.equals(InternalCatalog.INTERNAL_CATALOG_NAME)) {
-            return new String[] {toString(), getNoClusterString(), tbl};
+            // db.tbl
+            // tbl
+            return new String[] {toString(), tbl};
         } else {
-            return new String[] {toString(), // with cluster name
-                    getNoClusterString(), // without cluster name, legal implicit alias
-                    String.format("%s.%s", db, tbl),
-                    String.format("%s.%s", ClusterNamespace.getNameFromFullName(db), tbl), tbl};
+            // ctl.db.tbl
+            // db.tbl
+            // tbl
+            return new String[] {toString(),
+                    String.format("%s.%s", db, tbl), tbl};
         }
-    }
-
-    public String getNoClusterString() {
-        return Stream.of(InternalCatalog.INTERNAL_CATALOG_NAME.equals(ctl) ? null : ctl,
-                        ClusterNamespace.getNameFromFullName(db), tbl).filter(Objects::nonNull)
-                .collect(Collectors.joining("."));
     }
 
     @Override
@@ -164,6 +170,11 @@ public class TableName implements Writable {
             return toString().equals(other.toString());
         }
         return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(ctl, tbl, db);
     }
 
     public String toSql() {

@@ -22,10 +22,19 @@ import org.apache.doris.nereids.memo.GroupExpression;
 import org.apache.doris.nereids.properties.DistributionSpec;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.properties.PhysicalProperties;
+import org.apache.doris.nereids.trees.TableSample;
+import org.apache.doris.nereids.trees.expressions.Slot;
+import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
+import org.apache.doris.nereids.trees.plans.PreAggStatus;
 import org.apache.doris.nereids.trees.plans.RelationId;
+import org.apache.doris.nereids.trees.plans.algebra.OlapScan;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
 import org.apache.doris.nereids.util.Utils;
+import org.apache.doris.statistics.Statistics;
+
+import com.google.common.collect.ImmutableList;
+import org.json.JSONObject;
 
 import java.util.List;
 import java.util.Objects;
@@ -34,47 +43,55 @@ import java.util.Optional;
 /**
  * Physical olap scan plan.
  */
-public class PhysicalOlapScan extends PhysicalRelation {
-    private final OlapTable olapTable;
+public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapScan {
+
     private final DistributionSpec distributionSpec;
     private final long selectedIndexId;
-    private final List<Long> selectedTabletIds;
-    private final List<Long> selectedPartitionIds;
+    private final ImmutableList<Long> selectedTabletIds;
+    private final ImmutableList<Long> selectedPartitionIds;
+    private final PreAggStatus preAggStatus;
+    private final List<Slot> baseOutputs;
+
+    private final Optional<TableSample> tableSample;
 
     /**
      * Constructor for PhysicalOlapScan.
      */
     public PhysicalOlapScan(RelationId id, OlapTable olapTable, List<String> qualifier, long selectedIndexId,
             List<Long> selectedTabletIds, List<Long> selectedPartitionIds, DistributionSpec distributionSpec,
-            Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties) {
-        super(id, PlanType.PHYSICAL_OLAP_SCAN, qualifier, groupExpression, logicalProperties);
-        this.olapTable = olapTable;
-        this.selectedIndexId = selectedIndexId;
-        this.selectedTabletIds = selectedTabletIds;
-        this.selectedPartitionIds = selectedPartitionIds;
-        this.distributionSpec = distributionSpec;
+            PreAggStatus preAggStatus, List<Slot> baseOutputs,
+            Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
+            Optional<TableSample> tableSample) {
+        this(id, olapTable, qualifier, selectedIndexId, selectedTabletIds, selectedPartitionIds, distributionSpec,
+                preAggStatus, baseOutputs, groupExpression, logicalProperties, null, null,
+                tableSample);
     }
 
     /**
      * Constructor for PhysicalOlapScan.
      */
     public PhysicalOlapScan(RelationId id, OlapTable olapTable, List<String> qualifier, long selectedIndexId,
-            List<Long> selectedTabletId, List<Long> selectedPartitionId, DistributionSpec distributionSpec,
+            List<Long> selectedTabletIds, List<Long> selectedPartitionIds, DistributionSpec distributionSpec,
+            PreAggStatus preAggStatus, List<Slot> baseOutputs,
             Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
-            PhysicalProperties physicalProperties) {
-        super(id, PlanType.PHYSICAL_OLAP_SCAN, qualifier, groupExpression, logicalProperties, physicalProperties);
-
-        this.olapTable = olapTable;
+            PhysicalProperties physicalProperties, Statistics statistics, Optional<TableSample> tableSample) {
+        super(id, PlanType.PHYSICAL_OLAP_SCAN, olapTable, qualifier,
+                groupExpression, logicalProperties, physicalProperties, statistics);
         this.selectedIndexId = selectedIndexId;
-        this.selectedTabletIds = selectedTabletId;
-        this.selectedPartitionIds = selectedPartitionId;
+        this.selectedTabletIds = ImmutableList.copyOf(selectedTabletIds);
+        this.selectedPartitionIds = ImmutableList.copyOf(selectedPartitionIds);
         this.distributionSpec = distributionSpec;
+        this.preAggStatus = preAggStatus;
+        this.baseOutputs = ImmutableList.copyOf(baseOutputs);
+        this.tableSample = tableSample;
     }
 
+    @Override
     public long getSelectedIndexId() {
         return selectedIndexId;
     }
 
+    @Override
     public List<Long> getSelectedTabletIds() {
         return selectedTabletIds;
     }
@@ -85,18 +102,30 @@ public class PhysicalOlapScan extends PhysicalRelation {
 
     @Override
     public OlapTable getTable() {
-        return olapTable;
+        return (OlapTable) table;
     }
 
     public DistributionSpec getDistributionSpec() {
         return distributionSpec;
     }
 
+    public PreAggStatus getPreAggStatus() {
+        return preAggStatus;
+    }
+
+    public List<Slot> getBaseOutputs() {
+        return baseOutputs;
+    }
+
     @Override
     public String toString() {
-        return Utils.toSqlString("PhysicalOlapScan",
-                "qualified", Utils.qualifiedName(qualifier, olapTable.getName()),
-                "output", getOutput()
+        StringBuilder builder = new StringBuilder();
+        if (!getAppliedRuntimeFilters().isEmpty()) {
+            getAppliedRuntimeFilters()
+                    .stream().forEach(rf -> builder.append(" RF").append(rf.getId().asInt()));
+        }
+        return Utils.toSqlString("PhysicalOlapScan[" + table.getName() + "]" + getGroupIdWithPrefix(),
+                "stats", statistics, "RFs", builder
         );
     }
 
@@ -105,19 +134,25 @@ public class PhysicalOlapScan extends PhysicalRelation {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass() || !super.equals(o)) {
+        if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        PhysicalOlapScan that = ((PhysicalOlapScan) o);
-        return Objects.equals(selectedIndexId, that.selectedIndexId)
-                && Objects.equals(selectedTabletIds, that.selectedPartitionIds)
-                && Objects.equals(selectedPartitionIds, that.selectedPartitionIds)
-                && Objects.equals(olapTable, that.olapTable);
+        if (!super.equals(o)) {
+            return false;
+        }
+        PhysicalOlapScan olapScan = (PhysicalOlapScan) o;
+        return selectedIndexId == olapScan.selectedIndexId && Objects.equals(distributionSpec,
+                olapScan.distributionSpec) && Objects.equals(selectedTabletIds, olapScan.selectedTabletIds)
+                && Objects.equals(selectedPartitionIds, olapScan.selectedPartitionIds)
+                && Objects.equals(preAggStatus, olapScan.preAggStatus) && Objects.equals(baseOutputs,
+                olapScan.baseOutputs);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(id, selectedIndexId, selectedPartitionIds, selectedTabletIds, olapTable);
+        return Objects.hash(super.hashCode(), distributionSpec, selectedIndexId, selectedTabletIds,
+                selectedPartitionIds,
+                preAggStatus, baseOutputs);
     }
 
     @Override
@@ -127,19 +162,42 @@ public class PhysicalOlapScan extends PhysicalRelation {
 
     @Override
     public PhysicalOlapScan withGroupExpression(Optional<GroupExpression> groupExpression) {
-        return new PhysicalOlapScan(id, olapTable, qualifier, selectedIndexId, selectedTabletIds,
-                selectedPartitionIds, distributionSpec, groupExpression, getLogicalProperties());
+        return new PhysicalOlapScan(relationId, getTable(), qualifier, selectedIndexId, selectedTabletIds,
+                selectedPartitionIds, distributionSpec, preAggStatus, baseOutputs,
+                groupExpression, getLogicalProperties(), tableSample);
     }
 
     @Override
-    public PhysicalOlapScan withLogicalProperties(Optional<LogicalProperties> logicalProperties) {
-        return new PhysicalOlapScan(id, olapTable, qualifier, selectedIndexId, selectedTabletIds,
-                selectedPartitionIds, distributionSpec, Optional.empty(), logicalProperties.get());
+    public Plan withGroupExprLogicalPropChildren(Optional<GroupExpression> groupExpression,
+            Optional<LogicalProperties> logicalProperties, List<Plan> children) {
+        return new PhysicalOlapScan(relationId, getTable(), qualifier, selectedIndexId, selectedTabletIds,
+                selectedPartitionIds, distributionSpec, preAggStatus, baseOutputs, groupExpression,
+                logicalProperties.get(), tableSample);
     }
 
     @Override
-    public PhysicalOlapScan withPhysicalProperties(PhysicalProperties physicalProperties) {
-        return new PhysicalOlapScan(id, olapTable, qualifier, selectedIndexId, selectedTabletIds,
-                selectedPartitionIds, distributionSpec, Optional.empty(), getLogicalProperties(), physicalProperties);
+    public PhysicalOlapScan withPhysicalPropertiesAndStats(
+            PhysicalProperties physicalProperties, Statistics statistics) {
+        return new PhysicalOlapScan(relationId, getTable(), qualifier, selectedIndexId, selectedTabletIds,
+                selectedPartitionIds, distributionSpec, preAggStatus, baseOutputs, groupExpression,
+                getLogicalProperties(), physicalProperties, statistics, tableSample);
+    }
+
+    @Override
+    public JSONObject toJson() {
+        JSONObject olapScan = super.toJson();
+        JSONObject properties = new JSONObject();
+        properties.put("OlapTable", ((OlapTable) table).toSimpleJson());
+        properties.put("DistributionSpec", distributionSpec.toString());
+        properties.put("SelectedIndexId", Long.toString(selectedIndexId));
+        properties.put("SelectedTabletIds", selectedTabletIds.toString());
+        properties.put("SelectedPartitionIds", selectedPartitionIds.toString());
+        properties.put("PreAggStatus", preAggStatus.toString());
+        olapScan.put("Properties", properties);
+        return olapScan;
+    }
+
+    public Optional<TableSample> getTableSample() {
+        return tableSample;
     }
 }

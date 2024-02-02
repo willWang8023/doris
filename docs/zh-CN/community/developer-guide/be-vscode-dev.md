@@ -59,6 +59,8 @@ sudo apt install -y openssl libssl-dev
 
 ```
 git clone https://github.com/apache/doris.git
+cd doris
+git submodule update --init --recursive
 ```
 
 2. 编译第三方依赖包
@@ -90,6 +92,11 @@ cd /home/workspace/doris
 
 如果不出意外，应该会编译成功，最终的部署文件将产出到 /home/workspace/doris/output/ 目录下。如果还遇到其他问题，可以参照 doris 的安装文档 http://doris.apache.org。
 
+注意：如果编译fe时希望单独指定私有的maven仓地址，可以设置环境变量USER_SETTINGS_MVN_REPO指定settings.xml的文件路径。
+举例：
+```
+  export USER_SETTINGS_MVN_REPO="/xxx/xxx/settings.xml"
+```
 ## 部署调试(GDB)
 
 1. 给 be 编译结果文件授权
@@ -112,6 +119,7 @@ be_rpc_port = 9070
 webserver_port = 8040
 heartbeat_service_port = 9050
 brpc_port = 8060
+arrow_flight_sql_port = -1
 
 # Note that there should at most one ip match this list.
 # If no ip match this rule, will choose one randomly.
@@ -160,6 +168,7 @@ mkdir -p /soft/be/storage
                            ],
             "externalConsole": true,
             "MIMode": "gdb",
+            "miDebuggerPath": "/path/to/gdb",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
@@ -174,6 +183,8 @@ mkdir -p /soft/be/storage
 
 其中，environment 定义了几个环境变量 DORIS_HOME UDF_RUNTIME_DIR LOG_DIR PID_DIR，这是 doris_be 运行时需要的环境变量，如果没有设置，启动会失败。
 
+miDebuggerPath 指定了调试器的路径（如gdb），如果不指定 miDebuggerPath ，它将在操作系统的 PATH 变量中搜索调试器。系统自带的 gdb 版本有可能过低，这时就需要手动去指定新版本的 gdb 路径。
+
 **注意：如果希望是 attach(附加进程）调试，配置代码如下：**
 
 ```
@@ -187,6 +198,7 @@ mkdir -p /soft/be/storage
           "program": "/home/workspace/doris/output/lib/doris_be",
           "processId":,
           "MIMode": "gdb",
+          "miDebuggerPath": "/path/to/gdb",
           "internalConsoleOptions":"openOnSessionStart",
           "setupCommands": [
                 {
@@ -200,11 +212,13 @@ mkdir -p /soft/be/storage
 }
 ```
 
-配置中 **"request": "attach"， "processId":PID**，这两个配置是重点： 分别设置 gdb 的调试模式为 attach，附加进程的 processId，否则会失败。如何查找进程 id，可以在命令行中输入以下命令：
+配置中 **"request": "attach"， "processId":PID**，这两个配置是重点： 分别设置 gdb 的调试模式为 attach，附加进程的 processId，否则会失败。以下命令可以直接提取进程ID：
 
 ```
-ps -ef | grep palo*
+lsof -i | grep -m 1 doris_be | awk "{print $2}"
 ```
+
+或者写作 **"processId": "${command:pickProcess}"**，可在启动attach时指定pid.
 
 如图：
 
@@ -225,6 +239,7 @@ ps -ef | grep palo*
             "program": "/home/workspace/doris/output/be/lib/doris_be",
             "processId": 17016,
             "MIMode": "gdb",
+            "miDebuggerPath": "/path/to/gdb",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
@@ -261,6 +276,7 @@ ps -ef | grep palo*
             ],
             "externalConsole": false,
             "MIMode": "gdb",
+            "miDebuggerPath": "/path/to/gdb",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
@@ -292,3 +308,32 @@ lldb的attach比gdb更快，使用方式和gdb类似。vscode需要安装的插�
 }
 ```
 需要注意的是，此方式要求系统`glibc`版本为`2.18+`。如果没有则可以参考 [如何使CodeLLDB在CentOS7下工作](https://gist.github.com/JaySon-Huang/63dcc6c011feb5bd6deb1ef0cf1a9b96) 安装高版本glibc并将其链接到插件。
+
+## 调试core dump文件
+
+有时我们需要调试程序崩溃产生的core文件，这同样可以在vscode中完成，此时只需要在对应的configuration项中添加
+```json
+    "coreDumpPath": "/PATH/TO/CORE/DUMP/FILE"
+```
+即可。
+
+## 常用调试技巧
+
+### 函数执行路径
+
+当对BE的执行细节不熟悉时，可以使用`perf`等相关工具追踪函数调用，找出调用链。`perf`的使用可以在[调试工具](./debug-tool.md)中找到。这时候我们可以在较大的表上执行需要追踪的sql语句，然后增大采样频率（例如，`perf -F 999`）。观察结果可以大致得到sql在BE执行的关键路径。
+
+### 调试CRTP对象
+
+BE代码为了提高运行效率，在基础类型中大量采用了CRTP（奇异递归模板模式），导致debugger无法按照派生类型调试对象。此时我们可以使用GDB这样解决这一问题：
+
+假设我们需要调试`IColumn`类型的对象`col`，不知道它的实际类型，那么可以：
+
+```powershell
+set print object on # 按照派生类型输出对象
+p *col.t # 此时使用col.t即可得到col的具体类型
+p col.t->size() # 可以按照派生类型去使用它，例如ColumnString我们可以调用size()
+......
+```
+
+注意：具有多态效果的是指针`COW::t`而非`IColumn`类对象，所以我们需要在GDB中将所有对`col`的使用替换为`col.t`才可以真正得到派生类型对象。

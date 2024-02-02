@@ -25,7 +25,8 @@ import org.apache.doris.common.FeNameFormat;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
 import org.apache.doris.datasource.InternalCatalog;
-import org.apache.doris.mysql.privilege.PaloAuth.PrivLevel;
+import org.apache.doris.mysql.privilege.Auth.PrivLevel;
+import org.apache.doris.persist.gson.GsonPostProcessable;
 import org.apache.doris.persist.gson.GsonUtils;
 
 import com.google.common.base.Preconditions;
@@ -44,7 +45,7 @@ import java.util.stream.Stream;
  * the higher segment can't be a wildcard. The following examples are not allowed:
  * "ctl1.*.table1", "*.*.table2", "*.db1.*", ...
  */
-public class TablePattern implements Writable {
+public class TablePattern implements Writable, GsonPostProcessable {
     @SerializedName(value = "ctl")
     private String ctl;
     @SerializedName(value = "db")
@@ -58,7 +59,7 @@ public class TablePattern implements Writable {
     static {
         ALL = new TablePattern("*", "*", "*");
         try {
-            ALL.analyze("");
+            ALL.analyze();
         } catch (AnalysisException e) {
             // will not happen
         }
@@ -108,13 +109,13 @@ public class TablePattern implements Writable {
 
     public void analyze(Analyzer analyzer) throws AnalysisException {
         if (ctl == null) {
-            analyze(analyzer.getDefaultCatalog(), analyzer.getClusterName());
+            analyze(analyzer.getDefaultCatalog());
         } else {
-            analyze(analyzer.getClusterName());
+            analyze(ctl);
         }
     }
 
-    private void analyze(String catalogName, String clusterName) throws AnalysisException {
+    private void analyze(String catalogName) throws AnalysisException {
         if (isAnalyzed) {
             return;
         }
@@ -130,7 +131,6 @@ public class TablePattern implements Writable {
 
         if (!db.equals("*")) {
             FeNameFormat.checkDbName(db);
-            db = ClusterNamespace.getFullName(clusterName, db);
         }
 
         if (!tbl.equals("*")) {
@@ -139,8 +139,14 @@ public class TablePattern implements Writable {
         isAnalyzed = true;
     }
 
-    public void analyze(String clusterName) throws AnalysisException {
-        analyze(ctl, clusterName);
+    public void analyze() throws AnalysisException {
+        analyze(ctl);
+    }
+
+    private void removeClusterPrefix() {
+        if (db != null) {
+            db = ClusterNamespace.getNameFromFullName(db);
+        }
     }
 
     public static TablePattern read(DataInput in) throws IOException {
@@ -183,5 +189,11 @@ public class TablePattern implements Writable {
         Preconditions.checkState(isAnalyzed);
         String json = GsonUtils.GSON.toJson(this);
         Text.writeString(out, json);
+    }
+
+    @Override
+    public void gsonPostProcess() throws IOException {
+        removeClusterPrefix();
+        isAnalyzed = true;
     }
 }

@@ -57,10 +57,12 @@ sudo apt install -y openssl libssl-dev
 
 The following steps are carried out in the /home/workspace directory
 
-1. dowload source
+1. download source
 
 ```
-git clone https://github.com/apache/doris.git 
+git clone https://github.com/apache/doris.git
+cd doris
+git submodule update --init --recursive 
 ```
 
 2. Compile third-party dependency packages
@@ -91,6 +93,11 @@ Note: This compilation has the following instructions:
 
 If nothing happens, the compilation should be successful, and the final deployment file will be output to the /home/workspace/doris/output/ directory. If you still encounter other problems, you can refer to the doris installation document http://doris.apache.org.
 
+Note: If you want to specify the private maven repository address separately when compiling fe, you can set the environment variable USER_SETTINGS_MVN_REPO to specify the file path to settings.xml.
+Example:
+```
+  export USER_SETTINGS_MVN_REPO="/xxx/xxx/settings.xml"
+```
 ## Deployment and debugging(GDB)
 
 1. Authorize be compilation result files
@@ -113,9 +120,10 @@ be_rpc_port = 9070
 webserver_port = 8040
 heartbeat_service_port = 9050
 brpc_port = 8060
+arrow_flight_sql_port = -1
 
-# Note that there should at most one ip match this list.
-# If no ip match this rule, will choose one randomly.
+# Note that there should be at most one ip that matches this list.
+# If no ip matches this rule, it will choose one randomly.
 # use CIDR format, e.g. 10.10.10.0/
 # Default value is empty.
 priority_networks = 192.168.59.0/24 # data root path, separate by ';'
@@ -134,7 +142,7 @@ Need to create this folder, this is where the be data is stored
 mkdir -p /soft/be/storage
 ```
 
-3. Open vscode, and open the directory where the be source code is located. In this case, open the directory as **/home/workspace/doris/**，For details on how to vscode, refer to the online tutorial
+3. Open vscode, and open the directory where the be source code is located. In this case, open the directory as **/home/workspace/doris/**，For details on how to operate vscode, refer to the online tutorial
 
 4. Install the vscode ms c++ debugging plug-in, the plug-in identified by the red box in the figure below
 
@@ -161,6 +169,7 @@ mkdir -p /soft/be/storage
                            ],
             "externalConsole": true,
             "MIMode": "gdb",
+            "miDebuggerPath": "/path/to/gdb",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
@@ -175,6 +184,8 @@ mkdir -p /soft/be/storage
 
 Among them, environment defines several environment variables DORIS_HOME UDF_RUNTIME_DIR LOG_DIR PID_DIR, which are the environment variables needed when doris_be is running. If it is not set, the startup will fail
 
+MiDebuggerPath specifies the path of the debugger (such as gdb). If miDebuggerPath is not specified, it will search for gdb path in the PATH variable of the os. The gdb version that comes with the system can be too low, you may need to manually specify the new version of gdb path.
+
 **Note: If you want attach (additional process) debugging, the configuration code is as follows:**
 
 ```
@@ -188,6 +199,7 @@ Among them, environment defines several environment variables DORIS_HOME UDF_RUN
           "program": "/home/workspace/doris/output/lib/doris_be",
           "processId":,
           "MIMode": "gdb",
+          "miDebuggerPath": "/path/to/gdb",
           "internalConsoleOptions":"openOnSessionStart",
           "setupCommands": [
                 {
@@ -201,11 +213,13 @@ Among them, environment defines several environment variables DORIS_HOME UDF_RUN
 }
 ```
 
-In the configuration **"request": "attach", "processId": PID**, these two configurations are the key points: set the debug mode of gdb to attach and attach the processId of the process, otherwise it will fail. To find the process id, you can enter the following command in the command line:
+In the configuration **"request": "attach", "processId": PID**, these two configurations are the key points: set the debug mode of gdb to attach and attach the processId of the process, otherwise it will fail. The command below can directly extract the `pid` of doris' BE:
 
 ```
-ps -ef | grep palo*
+lsof -i | grep -m 1 doris_be | awk "{print $2}"
 ```
+
+Or write **"processId": "${command:pickProcess}"** to specify the pid when starting attach.
 
 As shown in the figure:
 
@@ -226,6 +240,7 @@ An example of a complete launch.json is as follows:
             "program": "/home/workspace/doris/output/be/lib/doris_be",
             "processId": 17016,
             "MIMode": "gdb",
+            "miDebuggerPath": "/path/to/gdb",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
@@ -262,6 +277,7 @@ An example of a complete launch.json is as follows:
             ],
             "externalConsole": false,
             "MIMode": "gdb",
+            "miDebuggerPath": "/path/to/gdb",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
@@ -282,7 +298,7 @@ An example of a complete launch.json is as follows:
 
 ## Debugging(LLDB)
 
-lldb's attach mode is fast than gdb，and the usage is similar to gdb. we should install plugin `CodeLLDB`, then add config to launch:
+lldb's attach mode is faster than gdb，and the usage is similar to gdb. we should install plugin `CodeLLDB`, then add config to launch:
 ```json
 {
     "name": "CodeLLDB attach",
@@ -293,4 +309,33 @@ lldb's attach mode is fast than gdb，and the usage is similar to gdb. we should
 }
 ```
 
-It should be noted that this method requires the system `glibc` version to be `2.18+`. you can refer [Get VSCode CodeLLDB plugin work on CentOS 7](https://gist.github.com/JaySon-Huang/63dcc6c011feb5bd6deb1ef0cf1a9b96) to make plugin work。
+It should be noted that this method requires the system `glibc` version to be `2.18+`. you can refer [Get VSCode CodeLLDB plugin work on CentOS 7](https://gist.github.com/JaySon-Huang/63dcc6c011feb5bd6deb1ef0cf1a9b96) to make plugin work.
+
+## Debugging core dump files
+
+Sometimes we need to debug the core files generated by a crash, which can also be done in vscode, by adding the corresponding configuration item
+```json
+    "coreDumpPath": "/PATH/TO/CORE/DUMP/FILE"
+```
+and you're done.
+
+## Common debugging techniques
+
+### Function execution paths
+
+When you are not familiar with the details of BE execution, you can trace function calls and find out the call chain using relevant tools such as `perf`. `perf` can be used in [Debug Tool](./debug-tool.md). At this point we can execute the sql statement to be traced on a larger table and then increase the sampling frequency (e.g., `perf -F 999`). Observe the results to get a rough idea of the critical path of sql execution at BE.
+
+### Debugging CRTP objects
+
+BE code uses a lot of CRTP (singular recursive template pattern) in the base types in order to improve the efficiency of operation, which makes it impossible for the debugger to debug objects according to the derived types. In this case we can use GDB to solve this problem in this way:
+
+Suppose we need to debug an object ``col`` of type ``IColumn`` and do not know its actual type, then we can:
+
+```powershell
+set print object on # Output the object as a derived type
+p *col.t # Use col.t in this case to get the exact type of col
+p col.t->size() # You can use it according to the derived type, e.g. ColumnString we can call size()
+......
+```
+
+Note: it is the pointer `COW::t` that has the effect of polymorphism and not the `IColumn` class object, so we need to replace all uses of `col` with `col.t` in the GDB to actually get the derived type object.

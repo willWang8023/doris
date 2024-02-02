@@ -18,12 +18,16 @@
 package org.apache.doris.nereids.types;
 
 import org.apache.doris.catalog.Type;
-import org.apache.doris.nereids.types.coercion.PrimitiveType;
+import org.apache.doris.nereids.types.coercion.DateLikeType;
+
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 
 /**
  * Date type in Nereids.
  */
-public class DateV2Type extends PrimitiveType {
+public class DateV2Type extends DateLikeType {
 
     public static final DateV2Type INSTANCE = new DateV2Type();
 
@@ -34,12 +38,29 @@ public class DateV2Type extends PrimitiveType {
 
     @Override
     public Type toCatalogDataType() {
-        return Type.DATE;
+        return Type.DATEV2;
     }
 
     @Override
     public int width() {
         return WIDTH;
+    }
+
+    @Override
+    public double rangeLength(double high, double low) {
+        if (high == low) {
+            return 0;
+        }
+        if (Double.isInfinite(high) || Double.isInfinite(low)) {
+            return Double.POSITIVE_INFINITY;
+        }
+        try {
+            LocalDate to = toLocalDate(high);
+            LocalDate from = toLocalDate(low);
+            return ChronoUnit.DAYS.between(from, to);
+        } catch (DateTimeException e) {
+            return Double.POSITIVE_INFINITY;
+        }
     }
 }
 

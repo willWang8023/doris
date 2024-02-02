@@ -25,25 +25,20 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-#include <cstddef>
-#include <ostream>
+#include <algorithm>
+#include <fstream>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include "env/env_util.h"
 #include "gutil/macros.h"
 #include "gutil/strings/numbers.h"
 #include "gutil/strings/split.h"
-#include "gutil/strings/stringpiece.h"
 #include "gutil/strings/substitute.h"
-#include "gutil/strings/util.h"
-#include "util/faststring.h"
+#include "io/fs/local_file_system.h"
 
 using std::string;
 using std::vector;
 using strings::Split;
-using strings::Substitute;
 
 namespace doris {
 
@@ -108,8 +103,16 @@ Status get_thread_stats(int64_t tid, ThreadStats* stats) {
         return Status::NotSupported("ThreadStats not supported");
     }
     std::string buf;
-    RETURN_IF_ERROR(env_util::read_file_to_string(
-            Env::Default(), strings::Substitute("/proc/self/task/$0/stat", tid), &buf));
+    auto path = fmt::format("/proc/self/task/{}/stat", tid);
+    std::ifstream file(path);
+    if (file.is_open()) {
+        std::ostringstream oss;
+        oss << file.rdbuf();
+        buf = oss.str();
+        file.close();
+    } else {
+        return Status::InternalError("failed to open {}: {}", path, std::strerror(errno));
+    }
 
     return parse_stat(buf, nullptr, stats);
 }
@@ -132,36 +135,6 @@ void disable_core_dumps() {
         int close_ret;
         RETRY_ON_EINTR(close_ret, close(f));
     }
-}
-
-bool is_being_debugged() {
-#ifndef __linux__
-    return false;
-#else
-    // Look for the TracerPid line in /proc/self/status.
-    // If this is non-zero, we are being ptraced, which is indicative of gdb or strace
-    // being attached.
-    std::string buf;
-    Status s = env_util::read_file_to_string(Env::Default(), "/proc/self/status", &buf);
-    if (!s.ok()) {
-        LOG(WARNING) << "could not read /proc/self/status: " << s.to_string();
-        return false;
-    }
-    StringPiece buf_sp(buf.data(), buf.size());
-    std::vector<StringPiece> lines = Split(buf_sp, "\n");
-    for (const auto& l : lines) {
-        if (!HasPrefixString(l, "TracerPid:")) continue;
-        std::pair<StringPiece, StringPiece> key_val = Split(l, "\t");
-        int64_t tracer_pid = -1;
-        if (!safe_strto64(key_val.second.data(), key_val.second.size(), &tracer_pid)) {
-            LOG(WARNING) << "Invalid line in /proc/self/status: " << l;
-            return false;
-        }
-        return tracer_pid != 0;
-    }
-    LOG(WARNING) << "Could not find TracerPid line in /proc/self/status";
-    return false;
-#endif // __linux__
 }
 
 } // namespace doris

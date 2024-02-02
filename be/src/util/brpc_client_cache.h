@@ -17,17 +17,35 @@
 
 #pragma once
 
+#include <brpc/adaptive_connection_type.h>
+#include <brpc/adaptive_protocol_type.h>
+#include <brpc/channel.h>
+#include <brpc/controller.h>
+#include <butil/endpoint.h>
+#include <fmt/format.h>
+#include <gen_cpp/Types_types.h>
+#include <gen_cpp/types.pb.h>
+#include <glog/logging.h>
+#include <google/protobuf/service.h>
 #include <parallel_hashmap/phmap.h>
+#include <stddef.h>
 
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <ostream>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "common/compiler_util.h" // IWYU pragma: keep
 #include "common/config.h"
-#include "gen_cpp/Types_types.h" // TNetworkAddress
-#include "gen_cpp/function_service.pb.h"
-#include "gen_cpp/internal_service.pb.h"
-#include "service/brpc.h"
-#include "util/doris_metrics.h"
+#include "util/network_util.h"
+
+namespace doris {
+class PBackendService_Stub;
+class PFunctionService_Stub;
+} // namespace doris
 
 template <typename T>
 using StubMap = phmap::parallel_flat_hash_map<
@@ -53,19 +71,27 @@ public:
     }
 #else
     std::shared_ptr<T> get_client(const TNetworkAddress& taddr) {
-        std::string host_port = fmt::format("{}:{}", taddr.hostname, taddr.port);
-        return get_client(host_port);
+        return get_client(taddr.hostname, taddr.port);
     }
 #endif
 
     std::shared_ptr<T> get_client(const std::string& host, int port) {
-        std::string host_port = fmt::format("{}:{}", host, port);
+        std::string realhost;
+        realhost = host;
+        if (!is_valid_ip(host)) {
+            Status status = hostname_to_ip(host, realhost);
+            if (!status.ok()) {
+                LOG(WARNING) << "failed to get ip from host:" << status.to_string();
+                return nullptr;
+            }
+        }
+        std::string host_port = get_host_port(realhost, port);
         return get_client(host_port);
     }
 
     std::shared_ptr<T> get_client(const std::string& host_port) {
         std::shared_ptr<T> stub_ptr;
-        auto get_value = [&stub_ptr](typename StubMap<T>::mapped_type& v) { stub_ptr = v; };
+        auto get_value = [&stub_ptr](const auto& v) { stub_ptr = v.second; };
         if (LIKELY(_stub_map.if_contains(host_port, get_value))) {
             return stub_ptr;
         }
@@ -73,13 +99,13 @@ public:
         // new one stub and insert into map
         auto stub = get_new_client_no_cache(host_port);
         _stub_map.try_emplace_l(
-                host_port, [&stub](typename StubMap<T>::mapped_type& v) { stub = v; }, stub);
+                host_port, [&stub](const auto& v) { stub = v.second; }, stub);
         return stub;
     }
 
     std::shared_ptr<T> get_new_client_no_cache(const std::string& host_port,
                                                const std::string& protocol = "baidu_std",
-                                               const std::string& connect_type = "pooled") {
+                                               const std::string& connect_type = "") {
         brpc::ChannelOptions options;
         if constexpr (std::is_same_v<T, PFunctionService_Stub>) {
             options.protocol = config::function_service_protocol;

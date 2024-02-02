@@ -36,19 +36,15 @@ public abstract class LogicalBinary<
         extends AbstractLogicalPlan
         implements BinaryPlan<LEFT_CHILD_TYPE, RIGHT_CHILD_TYPE> {
 
-    public LogicalBinary(PlanType type, LEFT_CHILD_TYPE leftChild, RIGHT_CHILD_TYPE rightChild) {
-        super(type, Optional.empty(), leftChild, rightChild);
-    }
-
-    public LogicalBinary(PlanType type, Optional<LogicalProperties> logicalProperties,
-                             LEFT_CHILD_TYPE leftChild, RIGHT_CHILD_TYPE rightChild) {
-        super(type, logicalProperties, leftChild, rightChild);
-    }
-
     public LogicalBinary(PlanType type, Optional<GroupExpression> groupExpression,
                              Optional<LogicalProperties> logicalProperties, LEFT_CHILD_TYPE leftChild,
                              RIGHT_CHILD_TYPE rightChild) {
         super(type, groupExpression, logicalProperties, leftChild, rightChild);
+    }
+
+    public LogicalBinary(PlanType type, Optional<GroupExpression> groupExpression,
+            Optional<LogicalProperties> logicalProperties, List<Plan> children) {
+        super(type, groupExpression, logicalProperties, children);
     }
 
     public abstract List<Slot> computeOutput();

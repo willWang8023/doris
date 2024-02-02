@@ -22,8 +22,10 @@ import org.apache.doris.analysis.DescriptorTable;
 import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.SlotRef;
 import org.apache.doris.catalog.Column;
+import org.apache.doris.common.Config;
 import org.apache.doris.thrift.TAlterMaterializedViewParam;
 import org.apache.doris.thrift.TAlterTabletReqV2;
+import org.apache.doris.thrift.TAlterTabletType;
 import org.apache.doris.thrift.TColumn;
 import org.apache.doris.thrift.TTaskType;
 
@@ -40,7 +42,6 @@ import java.util.Map;
  * The new replica can be a rollup replica, or a shadow replica of schema change.
  */
 public class AlterReplicaTask extends AgentTask {
-
     private long baseTabletId;
     private long newReplicaId;
     private int baseSchemaHash;
@@ -50,7 +51,9 @@ public class AlterReplicaTask extends AgentTask {
     private AlterJobV2.JobType jobType;
 
     private Map<String, Expr> defineExprs;
+    private Expr whereClause;
     private DescriptorTable descTable;
+    private Map<Object, List<TColumn>> tcloumnsPool;
     private List<Column> baseSchemaColumns;
 
     /**
@@ -60,7 +63,8 @@ public class AlterReplicaTask extends AgentTask {
     public AlterReplicaTask(long backendId, long dbId, long tableId, long partitionId, long rollupIndexId,
             long baseIndexId, long rollupTabletId, long baseTabletId, long newReplicaId, int newSchemaHash,
             int baseSchemaHash, long version, long jobId, AlterJobV2.JobType jobType, Map<String, Expr> defineExprs,
-            DescriptorTable descTable, List<Column> baseSchemaColumns) {
+            DescriptorTable descTable, List<Column> baseSchemaColumns, Map<Object, List<TColumn>> tcloumnsPool,
+            Expr whereClause) {
         super(null, backendId, TTaskType.ALTER, dbId, tableId, partitionId, rollupIndexId, rollupTabletId);
 
         this.baseTabletId = baseTabletId;
@@ -74,8 +78,10 @@ public class AlterReplicaTask extends AgentTask {
 
         this.jobType = jobType;
         this.defineExprs = defineExprs;
+        this.whereClause = whereClause;
         this.descTable = descTable;
         this.baseSchemaColumns = baseSchemaColumns;
+        this.tcloumnsPool = tcloumnsPool;
     }
 
     public long getBaseTabletId() {
@@ -109,22 +115,41 @@ public class AlterReplicaTask extends AgentTask {
     public TAlterTabletReqV2 toThrift() {
         TAlterTabletReqV2 req = new TAlterTabletReqV2(baseTabletId, signature, baseSchemaHash, newSchemaHash);
         req.setAlterVersion(version);
+        req.setBeExecVersion(Config.be_exec_version);
+        switch (jobType) {
+            case ROLLUP:
+                req.setAlterTabletType(TAlterTabletType.ROLLUP);
+                break;
+            case SCHEMA_CHANGE:
+                req.setAlterTabletType(TAlterTabletType.SCHEMA_CHANGE);
+                break;
+            default:
+                break;
+        }
         if (defineExprs != null) {
             for (Map.Entry<String, Expr> entry : defineExprs.entrySet()) {
                 List<SlotRef> slots = Lists.newArrayList();
                 entry.getValue().collect(SlotRef.class, slots);
                 TAlterMaterializedViewParam mvParam = new TAlterMaterializedViewParam(entry.getKey());
-                mvParam.setOriginColumnName(slots.get(0).getColumnName());
                 mvParam.setMvExpr(entry.getValue().treeToThrift());
                 req.addToMaterializedViewParams(mvParam);
             }
         }
+        if (whereClause != null) {
+            TAlterMaterializedViewParam mvParam = new TAlterMaterializedViewParam(Column.WHERE_SIGN);
+            mvParam.setMvExpr(whereClause.treeToThrift());
+            req.addToMaterializedViewParams(mvParam);
+        }
         req.setDescTbl(descTable.toThrift());
 
         if (baseSchemaColumns != null) {
-            List<TColumn> columns = new ArrayList<TColumn>();
-            for (Column column : baseSchemaColumns) {
-                columns.add(column.toThrift());
+            List<TColumn> columns = tcloumnsPool.get(baseSchemaColumns);
+            if (columns == null) {
+                columns = new ArrayList<TColumn>();
+                for (Column column : baseSchemaColumns) {
+                    columns.add(column.toThrift());
+                }
+                tcloumnsPool.put(baseSchemaColumns, columns);
             }
             req.setColumns(columns);
         }

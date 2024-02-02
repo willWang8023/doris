@@ -18,6 +18,8 @@
 package org.apache.doris.nereids.trees.plans.logical;
 
 import org.apache.doris.nereids.memo.GroupExpression;
+import org.apache.doris.nereids.properties.FunctionalDependencies;
+import org.apache.doris.nereids.properties.FunctionalDependencies.Builder;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.Slot;
@@ -25,62 +27,73 @@ import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.algebra.Filter;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
+import org.apache.doris.nereids.util.ExpressionUtils;
 import org.apache.doris.nereids.util.Utils;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Logical Having plan
+ *
  * @param <CHILD_TYPE> Types which inherit from {@link Plan}
  */
 public class LogicalHaving<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_TYPE> implements Filter {
 
-    private final Expression predicates;
+    private final Set<Expression> conjuncts;
 
-    public LogicalHaving(Expression predicates, CHILD_TYPE child) {
-        this(predicates, Optional.empty(), Optional.empty(), child);
+    public LogicalHaving(Set<Expression> conjuncts, CHILD_TYPE child) {
+        this(conjuncts, Optional.empty(), Optional.empty(), child);
     }
 
-    public LogicalHaving(Expression predicates, Optional<GroupExpression> groupExpression,
+    private LogicalHaving(Set<Expression> conjuncts, Optional<GroupExpression> groupExpression,
             Optional<LogicalProperties> logicalProperties, CHILD_TYPE child) {
         super(PlanType.LOGICAL_HAVING, groupExpression, logicalProperties, child);
-        this.predicates = Objects.requireNonNull(predicates, "predicates can not be null");
+        this.conjuncts = ImmutableSet.copyOf(Objects.requireNonNull(conjuncts, "conjuncts can not be null"));
     }
 
     @Override
-    public Expression getPredicates() {
-        return predicates;
+    public Set<Expression> getConjuncts() {
+        return conjuncts;
+    }
+
+    public List<Expression> getExpressions() {
+        return ImmutableList.copyOf(conjuncts);
     }
 
     @Override
     public Plan withChildren(List<Plan> children) {
         Preconditions.checkArgument(children.size() == 1);
-        return new LogicalHaving<>(predicates, children.get(0));
+        return new LogicalHaving<>(conjuncts, children.get(0));
     }
 
     @Override
     public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
-        return visitor.visitLogicalHaving((LogicalHaving<Plan>) this, context);
-    }
-
-    @Override
-    public List<? extends Expression> getExpressions() {
-        return ImmutableList.of(predicates);
+        return visitor.visitLogicalHaving(this, context);
     }
 
     @Override
     public Plan withGroupExpression(Optional<GroupExpression> groupExpression) {
-        return new LogicalHaving<>(predicates, groupExpression, Optional.of(getLogicalProperties()), child());
+        return new LogicalHaving<>(conjuncts, groupExpression, Optional.of(getLogicalProperties()), child());
     }
 
     @Override
-    public Plan withLogicalProperties(Optional<LogicalProperties> logicalProperties) {
-        return new LogicalHaving<>(predicates, Optional.empty(), logicalProperties, child());
+    public Plan withGroupExprLogicalPropChildren(Optional<GroupExpression> groupExpression,
+            Optional<LogicalProperties> logicalProperties, List<Plan> children) {
+        Preconditions.checkArgument(children.size() == 1);
+        return new LogicalHaving<>(conjuncts, groupExpression, logicalProperties, children.get(0));
+    }
+
+    public Plan withExpressions(Set<Expression> expressions) {
+        return new LogicalHaving<Plan>(expressions, Optional.empty(),
+                Optional.of(getLogicalProperties()), child());
     }
 
     @Override
@@ -90,7 +103,7 @@ public class LogicalHaving<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_T
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(predicates);
+        return Objects.hashCode(conjuncts);
     }
 
     @Override
@@ -102,11 +115,19 @@ public class LogicalHaving<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_T
             return false;
         }
         LogicalHaving other = (LogicalHaving) object;
-        return predicates.equals(other.predicates);
+        return conjuncts.equals(other.conjuncts);
+    }
+
+    @Override
+    public FunctionalDependencies computeFuncDeps(Supplier<List<Slot>> outputSupplier) {
+        Builder fdBuilder = new Builder(
+                child().getLogicalProperties().getFunctionalDependencies());
+        getConjuncts().forEach(e -> fdBuilder.addUniformSlot(ExpressionUtils.extractUniformSlot(e)));
+        return fdBuilder.build();
     }
 
     @Override
     public String toString() {
-        return Utils.toSqlString("LogicalHaving", "predicates", predicates);
+        return Utils.toSqlString("LogicalHaving", "predicates", getPredicate());
     }
 }

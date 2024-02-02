@@ -42,6 +42,19 @@ public final class GlobalVariable {
     public static final String QUERY_CACHE_SIZE = "query_cache_size";
     public static final String DEFAULT_ROWSET_TYPE = "default_rowset_type";
     public static final String PERFORMANCE_SCHEMA = "performance_schema";
+    public static final String DEFAULT_PASSWORD_LIFETIME = "default_password_lifetime";
+    public static final String PASSWORD_HISTORY = "password_history";
+    public static final String VALIDATE_PASSWORD_POLICY = "validate_password_policy";
+    public static final String SHOW_FULL_DBNAME_IN_INFO_SCHEMA_DB = "show_full_dbname_in_info_schema_db";
+
+    public static final long VALIDATE_PASSWORD_POLICY_DISABLED = 0;
+    public static final long VALIDATE_PASSWORD_POLICY_STRONG = 2;
+
+    public static final String SQL_CONVERTER_SERVICE_URL = "sql_converter_service_url";
+    public static final String ENABLE_AUDIT_PLUGIN = "enable_audit_plugin";
+    public static final String AUDIT_PLUGIN_MAX_BATCH_BYTES = "audit_plugin_max_batch_bytes";
+    public static final String AUDIT_PLUGIN_MAX_BATCH_INTERVAL_SEC = "audit_plugin_max_batch_interval_sec";
+    public static final String AUDIT_PLUGIN_MAX_SQL_LENGTH = "audit_plugin_max_sql_length";
 
     @VariableMgr.VarAttr(name = VERSION_COMMENT, flag = VariableMgr.READ_ONLY)
     public static String versionComment = "Doris version "
@@ -81,7 +94,38 @@ public final class GlobalVariable {
     @VariableMgr.VarAttr(name = PERFORMANCE_SCHEMA, flag = VariableMgr.READ_ONLY)
     public static String performanceSchema = "OFF";
 
-    // Don't allow create instance.
+    @VariableMgr.VarAttr(name = DEFAULT_PASSWORD_LIFETIME, flag = VariableMgr.GLOBAL)
+    public static int defaultPasswordLifetime = 0;
+
+    @VariableMgr.VarAttr(name = PASSWORD_HISTORY, flag = VariableMgr.GLOBAL)
+    public static int passwordHistory = 0;
+    // 0: DISABLED
+    // 2: STRONG
+    @VariableMgr.VarAttr(name = VALIDATE_PASSWORD_POLICY, flag = VariableMgr.GLOBAL)
+    public static long validatePasswordPolicy = 0;
+
+    // If set to true, the db name of TABLE_SCHEMA column in tables in information_schema
+    // database will be shown as `ctl.db`. Otherwise, show only `db`.
+    // This is used to compatible with some MySQL tools.
+    @VariableMgr.VarAttr(name = SHOW_FULL_DBNAME_IN_INFO_SCHEMA_DB, flag = VariableMgr.GLOBAL)
+    public static boolean showFullDbNameInInfoSchemaDb = false;
+
+    @VariableMgr.VarAttr(name = SQL_CONVERTER_SERVICE_URL, flag = VariableMgr.GLOBAL)
+    public static String sqlConverterServiceUrl = "";
+
+    @VariableMgr.VarAttr(name = ENABLE_AUDIT_PLUGIN, flag = VariableMgr.GLOBAL)
+    public static boolean enableAuditLoader = false;
+
+    @VariableMgr.VarAttr(name = AUDIT_PLUGIN_MAX_BATCH_BYTES, flag = VariableMgr.GLOBAL)
+    public static long auditPluginMaxBatchBytes = 50 * 1024 * 1024;
+
+    @VariableMgr.VarAttr(name = AUDIT_PLUGIN_MAX_BATCH_INTERVAL_SEC, flag = VariableMgr.GLOBAL)
+    public static long auditPluginMaxBatchInternalSec = 60;
+
+    @VariableMgr.VarAttr(name = AUDIT_PLUGIN_MAX_SQL_LENGTH, flag = VariableMgr.GLOBAL)
+    public static int auditPluginMaxSqlLength = 4096;
+
+    // Don't allow creating instance.
     private GlobalVariable() {
     }
 

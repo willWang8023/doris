@@ -14,11 +14,15 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-suite("test_hash_function") {
-    sql "set enable_vectorized_engine = true;"
+suite("test_hash_function", "arrow_flight_sql") {
     sql "set batch_size = 4096;"
+    sql "set enable_profile = true;"
 
     qt_sql "SELECT murmur_hash3_32(null);"
     qt_sql "SELECT murmur_hash3_32(\"hello\");"
     qt_sql "SELECT murmur_hash3_32(\"hello\", \"world\");"
+
+    qt_sql "SELECT murmur_hash3_64(null);"
+    qt_sql "SELECT murmur_hash3_64(\"hello\");"
+    qt_sql "SELECT murmur_hash3_64(\"hello\", \"world\");"
 }

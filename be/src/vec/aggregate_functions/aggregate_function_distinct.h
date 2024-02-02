@@ -20,15 +20,37 @@
 
 #pragma once
 
+#include <assert.h>
+#include <glog/logging.h>
+#include <stddef.h>
+
+#include <algorithm>
+#include <memory>
+#include <new>
+#include <string>
+#include <vector>
+
 #include "vec/aggregate_functions/aggregate_function.h"
-#include "vec/aggregate_functions/key_holder_helpers.h"
-#include "vec/common/aggregation_common.h"
+#include "vec/columns/column.h"
 #include "vec/common/assert_cast.h"
-#include "vec/common/field_visitors.h"
 #include "vec/common/hash_table/hash_set.h"
-#include "vec/common/hash_table/hash_table.h"
-#include "vec/common/sip_hash.h"
+#include "vec/common/string_ref.h"
+#include "vec/core/types.h"
+#include "vec/data_types/data_type.h"
 #include "vec/io/io_helper.h"
+#include "vec/io/var_int.h"
+
+namespace doris {
+namespace vectorized {
+class Arena;
+class BufferReadable;
+class BufferWritable;
+template <typename>
+class ColumnVector;
+} // namespace vectorized
+} // namespace doris
+template <typename, typename>
+struct DefaultHash;
 
 namespace doris::vectorized {
 
@@ -63,7 +85,7 @@ struct AggregateFunctionDistinctSingleNumericData {
 
 struct AggregateFunctionDistinctGenericData {
     /// When creating, the hash table must be small.
-    using Set = HashSetWithSavedHashWithStackMemory<StringRef, StringRefHash, 4>;
+    using Set = HashSetWithStackMemory<StringRef, StringRefHash, 4>;
     using Self = AggregateFunctionDistinctGenericData;
     Set set;
 
@@ -71,7 +93,9 @@ struct AggregateFunctionDistinctGenericData {
         Set::LookupResult it;
         bool inserted;
         for (const auto& elem : rhs.set) {
-            set.emplace(ArenaKeyHolder {elem.get_value(), *arena}, it, inserted);
+            StringRef key = elem.get_value();
+            key.data = arena->insert(key.data, key.size);
+            set.emplace(key, it, inserted);
         }
     }
 
@@ -83,7 +107,7 @@ struct AggregateFunctionDistinctGenericData {
     }
 
     void deserialize(BufferReadable& buf, Arena* arena) {
-        size_t size;
+        UInt64 size;
         read_var_uint(size, buf);
 
         StringRef ref;
@@ -99,15 +123,16 @@ struct AggregateFunctionDistinctSingleGenericData : public AggregateFunctionDist
     void add(const IColumn** columns, size_t /* columns_num */, size_t row_num, Arena* arena) {
         Set::LookupResult it;
         bool inserted;
-        auto key_holder = get_key_holder<is_plain_column>(*columns[0], row_num, *arena);
-        set.emplace(key_holder, it, inserted);
+        auto key = columns[0]->get_data_at(row_num);
+        key.data = arena->insert(key.data, key.size);
+        set.emplace(key, it, inserted);
     }
 
     MutableColumns get_arguments(const DataTypes& argument_types) const {
         MutableColumns argument_columns;
         argument_columns.emplace_back(argument_types[0]->create_column());
         for (const auto& elem : set) {
-            deserialize_and_insert<is_plain_column>(elem.get_value(), *argument_columns[0]);
+            argument_columns[0]->insert_data(elem.get_value().data, elem.get_value().size);
         }
 
         return argument_columns;
@@ -126,8 +151,8 @@ struct AggregateFunctionDistinctMultipleGenericData : public AggregateFunctionDi
 
         Set::LookupResult it;
         bool inserted;
-        auto key_holder = SerializedKeyHolder {value, *arena};
-        set.emplace(key_holder, it, inserted);
+        value.data = arena->insert(value.data, value.size);
+        set.emplace(value, it, inserted);
     }
 
     MutableColumns get_arguments(const DataTypes& argument_types) const {
@@ -168,8 +193,7 @@ private:
 
 public:
     AggregateFunctionDistinct(AggregateFunctionPtr nested_func_, const DataTypes& arguments)
-            : IAggregateFunctionDataHelper<Data, AggregateFunctionDistinct>(
-                      arguments, nested_func_->get_parameters()),
+            : IAggregateFunctionDataHelper<Data, AggregateFunctionDistinct>(arguments),
               nested_func(nested_func_),
               arguments_num(arguments.size()) {
         size_t nested_size = nested_func->align_of_data();
@@ -196,7 +220,6 @@ public:
         this->data(place).deserialize(buf, arena);
     }
 
-    // void insert_result_into(AggregateDataPtr place, IColumn & to, Arena * arena) const override
     void insert_result_into(ConstAggregateDataPtr targetplace, IColumn& to) const override {
         auto place = const_cast<AggregateDataPtr>(targetplace);
         auto arguments = this->data(place).get_arguments(this->argument_types);
@@ -220,7 +243,7 @@ public:
 
     void create(AggregateDataPtr __restrict place) const override {
         new (place) Data;
-        nested_func->create(get_nested_place(place));
+        SAFE_CREATE(nested_func->create(get_nested_place(place)), this->data(place).~Data());
     }
 
     void destroy(AggregateDataPtr __restrict place) const noexcept override {

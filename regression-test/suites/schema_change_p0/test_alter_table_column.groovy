@@ -18,10 +18,6 @@
 suite("test_alter_table_column") {
     def tbName1 = "alter_table_column_dup"
 
-    def getJobState = { tableName ->
-        def jobStateResult = sql """  SHOW ALTER TABLE COLUMN WHERE IndexName='${tableName}' ORDER BY createtime DESC LIMIT 1 """
-        return jobStateResult[0][9]
-    }
     sql "DROP TABLE IF EXISTS ${tbName1}"
     sql """
             CREATE TABLE IF NOT EXISTS ${tbName1} (
@@ -29,8 +25,12 @@ suite("test_alter_table_column") {
                 value1 INT
             )
             DUPLICATE KEY (k1)
-            DISTRIBUTED BY HASH(k1) BUCKETS 5 properties("replication_num" = "1", "light_schema_change" = "true");
+            DISTRIBUTED BY HASH(k1) BUCKETS 5 properties("replication_num" = "1", "light_schema_change" = "false");
         """
+
+    // alter and test light schema change
+    sql """ALTER TABLE ${tbName1} SET ("light_schema_change" = "true");"""
+
     sql """
             ALTER TABLE ${tbName1} 
             ADD COLUMN k2 INT KEY AFTER k1,
@@ -38,44 +38,28 @@ suite("test_alter_table_column") {
             ADD COLUMN value3 VARCHAR(255) AFTER value2,
             MODIFY COLUMN value2 INT AFTER value3;
         """
-    int max_try_secs = 60
-    while (max_try_secs--) {
-        String res = getJobState(tbName1)
-        if (res == "FINISHED") {
-            break
-        } else {
-            Thread.sleep(2000)
-            if (max_try_secs < 1) {
-                println "test timeout," + "state:" + res
-                assertEquals("FINISHED",res)
-            }
-        }
+
+    waitForSchemaChangeDone {
+        sql """SHOW ALTER TABLE COLUMN WHERE IndexName='${tbName1}' ORDER BY createtime DESC LIMIT 1"""
+        time 60
     }
-    Thread.sleep(200)
+
     sql """
             ALTER TABLE ${tbName1}   
             ORDER BY(k1,k2,value1,value2,value3),
             DROP COLUMN value3;
         """
-    max_try_secs = 60
-    while (max_try_secs--) {
-        String res = getJobState(tbName1)
-        if (res == "FINISHED") {
-            break
-        } else {
-            Thread.sleep(2000)
-            if (max_try_secs < 1) {
-                println "test timeout," + "state:" + res
-                assertEquals("FINISHED",res)
-            }
-        }
+
+    waitForSchemaChangeDone {
+        sql """SHOW ALTER TABLE COLUMN WHERE IndexName='${tbName1}' ORDER BY createtime DESC LIMIT 1"""
+        time 60
     }
 
     sql "SHOW ALTER TABLE COLUMN;"
     sql "insert into ${tbName1} values(1,1,10,20);"
     sql "insert into ${tbName1} values(1,1,30,40);"
     qt_sql "desc ${tbName1};"
-    qt_sql "select * from ${tbName1};"
+    qt_sql "select * from ${tbName1} order by value1;"
     sql "DROP TABLE ${tbName1} FORCE;"
 
     def tbName2 = "alter_table_column_agg"
@@ -93,31 +77,54 @@ suite("test_alter_table_column") {
             ADD COLUMN k2 INT KEY AFTER k1,
             ADD COLUMN value2 INT SUM AFTER value1;
         """
-    max_try_secs = 60
-    while (max_try_secs--) {
-        String res = getJobState(tbName2)
-        if (res == "FINISHED") {
-            break
-        } else {
-            Thread.sleep(2000)
-            if (max_try_secs < 1) {
-                println "test timeout," + "state:" + res
-                assertEquals("FINISHED",res)
-            }
-        }
+
+    waitForSchemaChangeDone {
+        sql """SHOW ALTER TABLE COLUMN WHERE IndexName='${tbName2}' ORDER BY createtime DESC LIMIT 1"""
+        time 60
     }
 
     sql "SHOW ALTER TABLE COLUMN"
     sql "insert into ${tbName2} values(1,1,10,20);"
     sql "insert into ${tbName2} values(1,1,30,40);"
     qt_sql "desc ${tbName2};"
-    qt_sql "select * from ${tbName2};"
+    qt_sql "select * from ${tbName2} order by value2;"
     sql "DROP TABLE ${tbName2} FORCE;"
+
+    def tbNameAddArray = "alter_table_add_array_column_dup"
+    sql "DROP TABLE IF EXISTS ${tbNameAddArray}"
+    sql """
+            CREATE TABLE IF NOT EXISTS ${tbNameAddArray} (
+                k1 INT,
+                value1 INT
+            )
+            DUPLICATE KEY (k1)
+            DISTRIBUTED BY HASH(k1) BUCKETS 5 properties(
+                "replication_num" = "1", 
+                "light_schema_change" = "true",
+                "disable_auto_compaction" = "true");
+        """
+
+    sql "insert into ${tbNameAddArray} values(1,2)"
+    sql "insert into ${tbNameAddArray} values(3,4)"
+    sql """
+            ALTER TABLE ${tbNameAddArray} 
+            ADD COLUMN value2 ARRAY<INT> DEFAULT '[]' AFTER value1,
+            ADD COLUMN value3 ARRAY<INT> AFTER value2,
+            ADD COLUMN value4 ARRAY<INT> NOT NULL DEFAULT '[]' AFTER value3;
+        """
+
+    waitForSchemaChangeDone {
+        sql """SHOW ALTER TABLE COLUMN WHERE IndexName='${tbNameAddArray}' ORDER BY createtime DESC LIMIT 1"""
+        time 60
+    }
+    qt_sql "desc ${tbNameAddArray};"
+    qt_sql "select * from ${tbNameAddArray} order by k1;"
+    sql "DROP TABLE ${tbNameAddArray} FORCE;"
 
     // vector search
     def check_load_result = {checklabel, testTablex ->
         Integer max_try_milli_secs = 10000
-        while(max_try_milli_secs) {
+        while (max_try_milli_secs) {
             def result = sql "show load where label = '${checklabel}'"
             if(result[0][2] == "FINISHED") {
                 qt_select "select * from ${testTablex} order by k1"
@@ -131,17 +138,45 @@ suite("test_alter_table_column") {
             }
         }
     }
+
+    sql "DROP TABLE IF EXISTS baseall"
+    sql """
+        CREATE TABLE IF NOT EXISTS `baseall` (
+            `k0` boolean null comment "",
+            `k1` tinyint(4) null comment "",
+            `k2` smallint(6) null comment "",
+            `k3` int(11) null comment "",
+            `k4` bigint(20) null comment "",
+            `k5` decimal(9, 3) null comment "",
+            `k6` char(5) null comment "",
+            `k10` date null comment "",
+            `k11` datetime null comment "",
+            `k7` varchar(20) null comment "",
+            `k8` double max null comment "",
+            `k9` float sum null comment "",
+            `k12` string replace null comment "",
+            `k13` largeint(40) replace null comment ""
+        ) engine=olap
+        DISTRIBUTED BY HASH(`k1`) BUCKETS 5 properties("replication_num" = "1")
+        """
+
+    streamLoad {
+        table "baseall"
+        set 'column_separator', ','
+        file "baseall.txt"
+    }
+    sql "sync"
+
     def tbName3 = "p_test"
-    sql "use test_query_db"
     sql "DROP TABLE IF EXISTS ${tbName3};"
     sql """
-            CREATE TABLE ${tbName3} (
+            CREATE TABLE IF NOT EXISTS ${tbName3} (
                 `k1` int(11) NULL COMMENT "",
                 `k2` int(11) NULL COMMENT "",
                 `v1` int(11) SUM NULL COMMENT ""
             ) ENGINE=OLAP
             AGGREGATE KEY(`k1`, `k2`)
-            DISTRIBUTED BY HASH(`k1`) BUCKETS 1
+            DISTRIBUTED BY HASH(`k1`) BUCKETS 5
             PROPERTIES (
                 "storage_type" = "COLUMN",
                 "replication_num" = "1"
@@ -158,21 +193,16 @@ suite("test_alter_table_column") {
     check2_doris(res1, res2)
 
     sql "alter table ${tbName3} add column v2 int sum NULL"
-    max_try_secs = 60
-    while (max_try_secs--) {
-        String res = getJobState(tbName3)
-        if (res == "FINISHED") {
-            break
-        } else {
-            Thread.sleep(2000)
-            if (max_try_secs < 1) {
-                println "test timeout," + "state:" + res
-                assertEquals("FINISHED",res)
-            }
-        }
+
+
+    waitForSchemaChangeDone {
+        sql """SHOW ALTER TABLE COLUMN WHERE IndexName='${tbName3}' ORDER BY createtime DESC LIMIT 1"""
+        time 60
     }
+
     def res3 = sql "select * from ${tbName3} order by k1"
     def res4 = sql "select k1, k2, k3, null from baseall order by k1"
     check2_doris(res3, res4)
     sql "DROP TABLE ${tbName3} FORCE;"
+
 }

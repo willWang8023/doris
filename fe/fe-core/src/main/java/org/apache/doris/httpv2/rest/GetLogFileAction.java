@@ -22,10 +22,10 @@ import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Strings;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import org.codehaus.jackson.map.ObjectMapper;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
@@ -55,6 +55,9 @@ public class GetLogFileAction extends RestBaseController {
 
     @RequestMapping(path = "/api/get_log_file", method = {RequestMethod.GET, RequestMethod.HEAD})
     public Object execute(HttpServletRequest request, HttpServletResponse response) {
+        if (!Config.enable_get_log_file_api) {
+            return ResponseEntityBuilder.badRequest("feature disabled");
+        }
         executeCheckPassword(request, response);
         checkGlobalAuth(ConnectContext.get().getCurrentUserIdentity(), PrivPredicate.ADMIN);
 
@@ -88,7 +91,7 @@ public class GetLogFileAction extends RestBaseController {
                     return ResponseEntityBuilder.internalError(e.getMessage());
                 }
             } else {
-                return ResponseEntityBuilder.okWithCommonError("Log file not exist: " + log.getName());
+                return ResponseEntityBuilder.okWithCommonError("Log file not exist: " + logFile);
             }
         }
         return ResponseEntityBuilder.ok();

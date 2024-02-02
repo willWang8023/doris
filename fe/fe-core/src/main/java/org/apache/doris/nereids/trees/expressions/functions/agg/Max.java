@@ -17,39 +17,78 @@
 
 package org.apache.doris.nereids.trees.expressions.functions.agg;
 
+import org.apache.doris.catalog.FunctionSignature;
+import org.apache.doris.catalog.Type;
+import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.trees.expressions.Expression;
+import org.apache.doris.nereids.trees.expressions.functions.CustomSignature;
+import org.apache.doris.nereids.trees.expressions.functions.Function;
+import org.apache.doris.nereids.trees.expressions.functions.window.SupportWindowAnalytic;
 import org.apache.doris.nereids.trees.expressions.shape.UnaryExpression;
+import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 import org.apache.doris.nereids.types.DataType;
+import org.apache.doris.nereids.types.DecimalV2Type;
+import org.apache.doris.nereids.types.DecimalV3Type;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 
 /** max agg function. */
-public class Max extends AggregateFunction implements UnaryExpression {
-
+public class Max extends NullableAggregateFunction
+        implements UnaryExpression, CustomSignature, SupportWindowAnalytic, CouldRollUp {
     public Max(Expression child) {
-        super("max", child);
+        this(false, false, child);
+    }
+
+    public Max(boolean distinct, Expression arg) {
+        this(distinct, false, arg);
+    }
+
+    private Max(boolean distinct, boolean alwaysNullable, Expression arg) {
+        super("max", false, alwaysNullable, arg);
     }
 
     @Override
-    public DataType getDataType() {
-        return child().getDataType();
+    public void checkLegalityBeforeTypeCoercion() {
+        if (getArgumentType(0).isOnlyMetricType()) {
+            throw new AnalysisException(Type.OnlyMetricTypeErrorMsg);
+        }
     }
 
     @Override
-    public boolean nullable() {
-        return child().nullable();
+    public FunctionSignature customSignature() {
+        DataType dataType = getArgument(0).getDataType();
+        if (dataType instanceof DecimalV2Type) {
+            dataType = DecimalV3Type.forType(dataType);
+        }
+        return FunctionSignature.ret(dataType).args(dataType);
     }
 
     @Override
-    public Expression withChildren(List<Expression> children) {
+    protected List<DataType> intermediateTypes() {
+        return ImmutableList.of(getDataType());
+    }
+
+    @Override
+    public Max withDistinctAndChildren(boolean distinct, List<Expression> children) {
         Preconditions.checkArgument(children.size() == 1);
-        return new Max(children.get(0));
+        return new Max(distinct, alwaysNullable, children.get(0));
     }
 
     @Override
-    public DataType getIntermediateType() {
-        return getDataType();
+    public NullableAggregateFunction withAlwaysNullable(boolean alwaysNullable) {
+        return new Max(distinct, alwaysNullable, children.get(0));
+    }
+
+    @Override
+    public <R, C> R accept(ExpressionVisitor<R, C> visitor, C context) {
+        return visitor.visitMax(this, context);
+    }
+
+    @Override
+    public Function constructRollUp(Expression param, Expression... varParams) {
+        return new Max(this.distinct, this.alwaysNullable, param);
     }
 }

@@ -36,7 +36,7 @@ under the License.
 
 ### 开始导入
 
-Hdfs load 创建导入语句，导入方式和[Broker Load](../../../data-operate/import/import-way/broker-load-manual.md) 基本相同，只需要将 `WITH BROKER broker_name ()` 语句替换成如下部分
+Hdfs load 创建导入语句，导入方式和[Broker Load](../../../data-operate/import/import-way/broker-load-manual) 基本相同，只需要将 `WITH BROKER broker_name ()` 语句替换成如下部分
 
 ```
   LOAD LABEL db_name.label_name 
@@ -82,11 +82,11 @@ Hdfs load 创建导入语句，导入方式和[Broker Load](../../../data-operat
        "max_filter_ratio"="0.1"
        );
    ```
-    关于参数介绍，请参阅[Broker Load](../../../data-operate/import/import-way/broker-load-manual.md)，HA集群的创建语法，通过`HELP BROKER LOAD`查看
+    关于参数介绍，请参阅[Broker Load](../../../data-operate/import/import-way/broker-load-manual)，HA集群的创建语法，通过`HELP BROKER LOAD`查看
   
 3. 查看导入状态
    
-   Broker load 是一个异步的导入方式，具体导入结果可以通过[SHOW LOAD](../../../sql-manual/sql-reference/Show-Statements/SHOW-LOAD.html#show-load)命令查看
+   Broker load 是一个异步的导入方式，具体导入结果可以通过[SHOW LOAD](../../../sql-manual/sql-reference/Show-Statements/SHOW-LOAD)命令查看
    
    ```
    mysql> show load order by createtime desc limit 1\G;
@@ -134,7 +134,7 @@ Hdfs load 创建导入语句，导入方式和[Broker Load](../../../data-operat
 其他云存储系统可以相应的文档找到与S3兼容的相关信息
 
 ### 开始导入
-导入方式和 [Broker Load](../../../data-operate/import/import-way/broker-load-manual.md) 基本相同，只需要将 `WITH BROKER broker_name ()` 语句替换成如下部分
+导入方式和 [Broker Load](../../../data-operate/import/import-way/broker-load-manual) 基本相同，只需要将 `WITH BROKER broker_name ()` 语句替换成如下部分
 ```
     WITH S3
     (
@@ -168,7 +168,7 @@ Hdfs load 创建导入语句，导入方式和[Broker Load](../../../data-operat
 
 ### 常见问题
 
-S3 SDK 默认使用 `virtual-hosted style` 方式。但某些对象存储系统可能没开启或没支持 `virtual-hosted style` 方式的访问，此时我们可以添加 `use_path_style` 参数来强制使用 `path style` 方式：
+1. S3 SDK 默认使用 `virtual-hosted style` 方式。但某些对象存储系统可能没开启或没支持 `virtual-hosted style` 方式的访问，此时我们可以添加 `use_path_style` 参数来强制使用 `path style` 方式：
 
 ```
   WITH S3
@@ -180,3 +180,20 @@ S3 SDK 默认使用 `virtual-hosted style` 方式。但某些对象存储系统�
         "use_path_style" = "true"
   )
 ```
+
+<version since="1.2">
+
+2. 支持使用临时秘钥（TOKEN) 访问所有支持 S3 协议的对象存储，用法如下：
+
+```
+  WITH S3
+  (
+        "AWS_ENDPOINT" = "AWS_ENDPOINT",
+        "AWS_ACCESS_KEY" = "AWS_TEMP_ACCESS_KEY",
+        "AWS_SECRET_KEY" = "AWS_TEMP_SECRET_KEY",
+        "AWS_TOKEN" = "AWS_TEMP_TOKEN",
+        "AWS_REGION" = "AWS_REGION"
+  )
+```
+
+</version>

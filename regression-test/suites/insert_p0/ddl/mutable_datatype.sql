@@ -1,4 +1,4 @@
-CREATE TABLE `mutable_datatype` (
+CREATE TABLE IF NOT EXISTS `mutable_datatype` (
     c_bigint bigint,
     c_double double,
     c_string string,
@@ -6,7 +6,7 @@ CREATE TABLE `mutable_datatype` (
     c_timestamp datetime,
     c_boolean boolean,
     c_short_decimal decimal(5,2),
-    c_long_decimal decimal(27,9)
+    c_long_decimal decimal(38,10)
 )
 DUPLICATE KEY(c_bigint)
 DISTRIBUTED BY HASH(c_bigint) BUCKETS 1

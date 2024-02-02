@@ -20,6 +20,11 @@ set -eo pipefail
 
 curdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
+if [[ "$(uname -s)" == 'Darwin' ]] && command -v brew &>/dev/null; then
+    PATH="$(brew --prefix)/opt/gnu-getopt/bin:${PATH}"
+    export PATH
+fi
+
 OPTS="$(getopt \
     -n "$0" \
     -o '' \
@@ -62,7 +67,7 @@ export JAVA_OPTS="-Xmx1024m -Dfile.encoding=UTF-8"
 export BROKER_LOG_DIR="${BROKER_HOME}/log"
 # java
 if [[ -z "${JAVA_HOME}" ]]; then
-    JAVA="$(which java)"
+    JAVA="$(command -v java)"
 else
     JAVA="${JAVA_HOME}/bin/java"
 fi

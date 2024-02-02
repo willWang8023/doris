@@ -20,12 +20,12 @@ package org.apache.doris.analysis;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.ScalarType;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.CaseSensibility;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.PatternMatcher;
+import org.apache.doris.common.PatternMatcherWrapper;
 import org.apache.doris.common.UserException;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
@@ -46,7 +46,7 @@ public class ShowBackupStmt extends ShowStmt {
     private String dbName;
     private final Expr where;
     private boolean isAccurateMatch;
-    private String labelValue;
+    private String snapshotName;
 
     public ShowBackupStmt(String dbName, Expr where) {
         this.dbName = dbName;
@@ -65,12 +65,10 @@ public class ShowBackupStmt extends ShowStmt {
             if (Strings.isNullOrEmpty(dbName)) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
             }
-        } else {
-            dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
         }
 
         // check auth
-        if (!Env.getCurrentEnv().getAuth().checkDbPriv(ConnectContext.get(), dbName, PrivPredicate.LOAD)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkDbPriv(ConnectContext.get(), dbName, PrivPredicate.LOAD)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_DBACCESS_DENIED_ERROR,
                     ConnectContext.get().getQualifiedUser(), dbName);
         }
@@ -80,8 +78,8 @@ public class ShowBackupStmt extends ShowStmt {
         }
         boolean valid = analyzeWhereClause();
         if (!valid) {
-            throw new AnalysisException("Where clause should like: LABEL = \"your_label_name\", "
-                + " or LABEL LIKE \"matcher\"");
+            throw new AnalysisException("Where clause should like: SnapshotName = \"your_snapshot_name\", "
+                + " or SnapshotName LIKE \"matcher\"");
         }
     }
 
@@ -110,7 +108,7 @@ public class ShowBackupStmt extends ShowStmt {
             return false;
         }
         String leftKey = ((SlotRef) where.getChild(0)).getColumnName();
-        if (!"label".equalsIgnoreCase(leftKey)) {
+        if (!"snapshotname".equalsIgnoreCase(leftKey)) {
             return false;
         }
 
@@ -118,8 +116,8 @@ public class ShowBackupStmt extends ShowStmt {
         if (!(where.getChild(1) instanceof StringLiteral)) {
             return false;
         }
-        labelValue = ((StringLiteral) where.getChild(1)).getStringValue();
-        if (Strings.isNullOrEmpty(labelValue)) {
+        snapshotName = ((StringLiteral) where.getChild(1)).getStringValue();
+        if (Strings.isNullOrEmpty(snapshotName)) {
             return false;
         }
 
@@ -138,13 +136,13 @@ public class ShowBackupStmt extends ShowStmt {
     @Override
     public String toSql() {
         StringBuilder builder = new StringBuilder();
-        builder.append("SHOW BACKUP");
-        if (dbName != null) {
-            builder.append(" FROM `").append(dbName).append("` ");
+        builder.append("SHOW BACKUP ");
+        if (Strings.isNullOrEmpty(dbName)) {
+            builder.append("FROM `").append(dbName).append("` ");
         }
 
         if (where != null) {
-            builder.append(where.toSql());
+            builder.append("WHERE ").append(where.toSql());
         }
 
         return builder.toString();
@@ -164,24 +162,24 @@ public class ShowBackupStmt extends ShowStmt {
         return isAccurateMatch;
     }
 
-    public String getLabelValue() {
-        return labelValue;
+    public String getSnapshotName() {
+        return snapshotName;
     }
 
     public Expr getWhere() {
         return where;
     }
 
-    public Predicate<String> getLabelPredicate() throws AnalysisException {
+    public Predicate<String> getSnapshotPredicate() throws AnalysisException {
         if (null == where) {
             return label -> true;
         }
         if (isAccurateMatch) {
             return CaseSensibility.LABEL.getCaseSensibility()
-                    ? label -> label.equals(labelValue) : label -> label.equalsIgnoreCase(labelValue);
+                    ? label -> label.equals(snapshotName) : label -> label.equalsIgnoreCase(snapshotName);
         } else {
-            PatternMatcher patternMatcher = PatternMatcher.createMysqlPattern(
-                    labelValue, CaseSensibility.LABEL.getCaseSensibility());
+            PatternMatcher patternMatcher = PatternMatcherWrapper.createMysqlPattern(
+                    snapshotName, CaseSensibility.LABEL.getCaseSensibility());
             return patternMatcher::match;
         }
     }

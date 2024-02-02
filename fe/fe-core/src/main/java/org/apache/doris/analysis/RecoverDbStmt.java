@@ -17,15 +17,11 @@
 
 package org.apache.doris.analysis;
 
-import org.apache.doris.analysis.CompoundPredicate.Operator;
 import org.apache.doris.catalog.Env;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
-import org.apache.doris.mysql.privilege.PaloPrivilege;
-import org.apache.doris.mysql.privilege.PrivBitSet;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 
@@ -33,13 +29,27 @@ import com.google.common.base.Strings;
 
 public class RecoverDbStmt extends DdlStmt {
     private String dbName;
+    private long dbId = -1;
+    private String newDbName = "";
 
-    public RecoverDbStmt(String dbName) {
+    public RecoverDbStmt(String dbName, long dbId, String newDbName) {
         this.dbName = dbName;
+        this.dbId = dbId;
+        if (newDbName != null) {
+            this.newDbName = newDbName;
+        }
     }
 
     public String getDbName() {
         return dbName;
+    }
+
+    public long getDbId() {
+        return dbId;
+    }
+
+    public String getNewDbName() {
+        return newDbName;
     }
 
     @Override
@@ -48,11 +58,9 @@ public class RecoverDbStmt extends DdlStmt {
         if (Strings.isNullOrEmpty(dbName)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_WRONG_DB_NAME, dbName);
         }
-        dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
 
-        if (!Env.getCurrentEnv().getAuth().checkDbPriv(ConnectContext.get(), dbName,
-                PrivPredicate.of(PrivBitSet.of(
-                        PaloPrivilege.ALTER_PRIV, PaloPrivilege.CREATE_PRIV, PaloPrivilege.ADMIN_PRIV), Operator.OR))) {
+        if (!Env.getCurrentEnv().getAccessManager().checkDbPriv(ConnectContext.get(), dbName,
+                PrivPredicate.ALTER_CREATE)) {
             ErrorReport.reportAnalysisException(
                     ErrorCode.ERR_DBACCESS_DENIED_ERROR, analyzer.getQualifiedUser(), dbName);
         }
@@ -60,6 +68,18 @@ public class RecoverDbStmt extends DdlStmt {
 
     @Override
     public String toSql() {
-        return "RECOVER DATABASE " + dbName;
+        StringBuilder sb = new StringBuilder();
+        sb.append("RECOVER");
+        sb.append(" DATABASE ");
+        sb.append(this.dbName);
+        if (this.dbId != -1) {
+            sb.append(" ");
+            sb.append(this.dbId);
+        }
+        if (!Strings.isNullOrEmpty(newDbName)) {
+            sb.append(" AS ");
+            sb.append(this.newDbName);
+        }
+        return sb.toString();
     }
 }

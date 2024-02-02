@@ -19,11 +19,41 @@
 // and modified by Doris
 #pragma once
 
+#include <fmt/format.h>
+#include <glog/logging.h>
+#include <string.h>
+
+#include <boost/iterator/iterator_facade.hpp>
+#include <memory>
+#include <ostream>
+#include <string>
+#include <utility>
+
+#include "common/status.h"
+#include "vec/columns/column.h"
 #include "vec/columns/column_array.h"
+#include "vec/columns/column_nullable.h"
+#include "vec/columns/column_string.h"
+#include "vec/columns/columns_number.h"
+#include "vec/common/assert_cast.h"
+#include "vec/common/hash_table/hash.h"
 #include "vec/common/hash_table/hash_set.h"
-#include "vec/common/hash_table/hash_table.h"
+#include "vec/common/pod_array_fwd.h"
+#include "vec/common/string_ref.h"
+#include "vec/core/block.h"
+#include "vec/core/column_numbers.h"
+#include "vec/core/column_with_type_and_name.h"
+#include "vec/core/types.h"
+#include "vec/data_types/data_type.h"
 #include "vec/data_types/data_type_array.h"
+#include "vec/data_types/data_type_nullable.h"
 #include "vec/functions/function.h"
+
+namespace doris {
+class FunctionContext;
+} // namespace doris
+template <typename, typename>
+struct DefaultHash;
 
 namespace doris::vectorized {
 
@@ -48,7 +78,7 @@ public:
     }
 
     Status execute_impl(FunctionContext* context, Block& block, const ColumnNumbers& arguments,
-                        size_t result, size_t input_rows_count) override {
+                        size_t result, size_t input_rows_count) const override {
         ColumnPtr src_column =
                 block.get_by_position(arguments[0]).column->convert_to_full_column_if_const();
         const auto& src_column_array = check_and_get_column<ColumnArray>(*src_column);
@@ -106,7 +136,7 @@ private:
     template <typename ColumnType>
     bool _execute_number(const IColumn& src_column, const ColumnArray::Offsets64& src_offsets,
                          IColumn& dest_column, ColumnArray::Offsets64& dest_offsets,
-                         const NullMapType* src_null_map, NullMapType* dest_null_map) {
+                         const NullMapType* src_null_map, NullMapType* dest_null_map) const {
         using NestType = typename ColumnType::value_type;
         using ElementNativeType = typename NativeType<NestType>::Type;
 
@@ -130,6 +160,10 @@ private:
             set.clear();
             size_t null_size = 0;
             for (size_t j = prev_src_offset; j < curr_src_offset; ++j) {
+                if (null_size != 0 && src_null_map && (*src_null_map)[j]) {
+                    // ignore duplicated nulls
+                    continue;
+                }
                 if (src_null_map && (*src_null_map)[j]) {
                     DCHECK(dest_null_map != nullptr);
                     (*dest_null_map).push_back(true);
@@ -159,7 +193,7 @@ private:
 
     bool _execute_string(const IColumn& src_column, const ColumnArray::Offsets64& src_offsets,
                          IColumn& dest_column, ColumnArray::Offsets64& dest_offsets,
-                         const NullMapType* src_null_map, NullMapType* dest_null_map) {
+                         const NullMapType* src_null_map, NullMapType* dest_null_map) const {
         const ColumnString* src_data_concrete = reinterpret_cast<const ColumnString*>(&src_column);
         if (!src_data_concrete) {
             return false;
@@ -180,6 +214,10 @@ private:
             set.clear();
             size_t null_size = 0;
             for (size_t j = prev_src_offset; j < curr_src_offset; ++j) {
+                if (null_size != 0 && src_null_map && (*src_null_map)[j]) {
+                    // ignore duplicated nulls
+                    continue;
+                }
                 if (src_null_map && (*src_null_map)[j]) {
                     DCHECK(dest_null_map != nullptr);
                     // Note: here we need to update the offset of ColumnString
@@ -218,7 +256,7 @@ private:
     bool _execute_by_type(const IColumn& src_column, const ColumnArray::Offsets64& src_offsets,
                           IColumn& dest_column, ColumnArray::Offsets64& dest_offsets,
                           const NullMapType* src_null_map, NullMapType* dest_null_map,
-                          DataTypePtr& nested_type) {
+                          DataTypePtr& nested_type) const {
         bool res = false;
         WhichDataType which(remove_nullable(nested_type));
         if (which.is_uint8()) {
@@ -251,9 +289,27 @@ private:
         } else if (which.is_date_time()) {
             res = _execute_number<ColumnDateTime>(src_column, src_offsets, dest_column,
                                                   dest_offsets, src_null_map, dest_null_map);
-        } else if (which.is_decimal128()) {
-            res = _execute_number<ColumnDecimal128>(src_column, src_offsets, dest_column,
+        } else if (which.is_date_v2()) {
+            res = _execute_number<ColumnDateV2>(src_column, src_offsets, dest_column, dest_offsets,
+                                                src_null_map, dest_null_map);
+        } else if (which.is_date_time_v2()) {
+            res = _execute_number<ColumnDateTimeV2>(src_column, src_offsets, dest_column,
                                                     dest_offsets, src_null_map, dest_null_map);
+        } else if (which.is_decimal32()) {
+            res = _execute_number<ColumnDecimal32>(src_column, src_offsets, dest_column,
+                                                   dest_offsets, src_null_map, dest_null_map);
+        } else if (which.is_decimal64()) {
+            res = _execute_number<ColumnDecimal64>(src_column, src_offsets, dest_column,
+                                                   dest_offsets, src_null_map, dest_null_map);
+        } else if (which.is_decimal128v3()) {
+            res = _execute_number<ColumnDecimal128V3>(src_column, src_offsets, dest_column,
+                                                      dest_offsets, src_null_map, dest_null_map);
+        } else if (which.is_decimal256()) {
+            res = _execute_number<ColumnDecimal256>(src_column, src_offsets, dest_column,
+                                                    dest_offsets, src_null_map, dest_null_map);
+        } else if (which.is_decimal128v2()) {
+            res = _execute_number<ColumnDecimal128V2>(src_column, src_offsets, dest_column,
+                                                      dest_offsets, src_null_map, dest_null_map);
         } else if (which.is_string()) {
             res = _execute_string(src_column, src_offsets, dest_column, dest_offsets, src_null_map,
                                   dest_null_map);

@@ -17,16 +17,9 @@
 
 suite("test_load_json_null_to_nullable", "p0") {
     // define a sql table
-    def testTable = "tbl_test_json_load"
-    def dbName = "test_query_db"
-    
-    def create_test_table = {enable_vectorized_flag ->
-        if (enable_vectorized_flag) {
-            sql """ set enable_vectorized_engine = true """
-        } else {
-            sql """ set enable_vectorized_engine = false """
-        }
+    def testTable = "tbl_test_load_json_null_to_nullable"
 
+    def create_test_table = {
         def result1 = sql """
             CREATE TABLE IF NOT EXISTS ${testTable} (
               `k1` CHAR NULL COMMENT "",
@@ -41,7 +34,7 @@ suite("test_load_json_null_to_nullable", "p0") {
             """
     }
 
-    def load_array_data = {table_name, strip_flag, read_flag, format_flag, exprs, json_paths, 
+    def load_array_data = {new_json_reader_flag, table_name, strip_flag, read_flag, format_flag, exprs, json_paths, 
                             json_root, where_expr, fuzzy_flag, column_sep, file_name ->
         // load the json data
         streamLoad {
@@ -77,31 +70,27 @@ suite("test_load_json_null_to_nullable", "p0") {
         }
     }
 
+    def check_data_correct = {table_name ->
+        sql "sync"
+        // select the table and check whether the data is correct
+        qt_select "select * from ${table_name} order by k1" 
+    }
+
     // case1: import array data in json format and enable vectorized engine
     try {
         sql "DROP TABLE IF EXISTS ${testTable}"
         
-        create_test_table.call(true)
+        create_test_table.call()
 
-        load_array_data.call(testTable, 'true', '', 'json', '', '', '', '', '', '', 'test_char.json')
+        load_array_data.call('false', testTable, 'true', '', 'json', '', '', '', '', '', '', 'test_char.json')
         
-        // select the table and check whether the data is correct
-        qt_select "select * from ${testTable} order by k1"
+        check_data_correct(testTable)
 
-    } finally {
-        try_sql("DROP TABLE IF EXISTS ${testTable}")
-    }
-
-    // case2: import array data in json format and disable vectorized engine
-    try {
+        // test new json load, should be deleted after new_load_scan ready
         sql "DROP TABLE IF EXISTS ${testTable}"
-        
-        create_test_table.call(false)
-
-        load_array_data.call(testTable, 'true', '', 'json', '', '', '', '', '', '', 'test_char.json')
-        
-        // select the table and check whether the data is correct
-        qt_select "select * from ${testTable} order by k1"
+        create_test_table.call()
+        load_array_data.call('true', testTable, 'true', '', 'json', '', '', '', '', '', '', 'test_char.json')
+        check_data_correct(testTable)
 
     } finally {
         try_sql("DROP TABLE IF EXISTS ${testTable}")

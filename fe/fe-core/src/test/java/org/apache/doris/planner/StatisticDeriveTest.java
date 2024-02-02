@@ -17,6 +17,7 @@
 
 package org.apache.doris.planner;
 
+import org.apache.doris.common.Config;
 import org.apache.doris.qe.SessionVariable;
 import org.apache.doris.qe.StmtExecutor;
 import org.apache.doris.utframe.TestWithFeService;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 public class StatisticDeriveTest extends TestWithFeService {
     @Override
     protected void runBeforeAll() throws Exception {
+        Config.enable_odbc_mysql_broker_table = true;
         // create database
         createDatabase("test");
 
@@ -120,7 +122,7 @@ public class StatisticDeriveTest extends TestWithFeService {
     @Test
     public void testAnalyticEvalStatsDerive() throws Exception {
         // contain SortNode/ExchangeNode/OlapScanNode
-        String sql = "select dt, min(id) OVER (PARTITION BY dt ORDER BY id) from test.join1";
+        String sql = "select /*+ SET_VAR(enable_nereids_planner=false) */ dt, min(id) OVER (PARTITION BY dt ORDER BY id) from test.join1";
         StmtExecutor stmtExecutor = new StmtExecutor(connectContext, sql);
         SessionVariable sessionVariable = connectContext.getSessionVariable();
         sessionVariable.setEnableJoinReorderBasedCost(true);
@@ -161,7 +163,7 @@ public class StatisticDeriveTest extends TestWithFeService {
         Assert.assertNotNull(stmtExecutor.planner().getFragments());
         Assert.assertNotEquals(0, stmtExecutor.planner().getFragments().size());
         System.out.println(getSQLPlanOrErrorMsg("explain " + sql));
-        assertSQLPlanOrErrorMsgContains(sql, "CROSS JOIN");
+        assertSQLPlanOrErrorMsgContains(sql, "NESTED LOOP JOIN");
         assertSQLPlanOrErrorMsgContains(sql, "ASSERT NUMBER OF ROWS");
         assertSQLPlanOrErrorMsgContains(sql, "EXCHANGE");
         assertSQLPlanOrErrorMsgContains(sql, "AGGREGATE");

@@ -71,7 +71,7 @@ public class JvmStats {
                 }
                 pools.add(new MemoryPool(name,
                         usage.getUsed() < 0 ? 0 : usage.getUsed(),
-                        usage.getMax() < 0 ? 0 : usage.getMax(),
+                        usage.getMax() < 0 ? heapMax : usage.getMax(),
                         peakUsage.getUsed() < 0 ? 0 : peakUsage.getUsed(),
                         peakUsage.getMax() < 0 ? 0 : peakUsage.getMax()
                 ));
@@ -125,7 +125,7 @@ public class JvmStats {
         GarbageCollector[] collectors = new GarbageCollector[gcMxBeans.size()];
         for (int i = 0; i < collectors.length; i++) {
             GarbageCollectorMXBean gcMxBean = gcMxBeans.get(i);
-            collectors[i] = new GarbageCollector(GcNames.getByGcName(gcMxBean.getName(), gcMxBean.getName()),
+            collectors[i] = new GarbageCollector(gcMxBean.getName(),
                     gcMxBean.getCollectionCount(), gcMxBean.getCollectionTime());
         }
         GarbageCollectors garbageCollectors = new GarbageCollectors(collectors);

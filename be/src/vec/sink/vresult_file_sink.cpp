@@ -17,136 +17,94 @@
 
 #include "vec/sink/vresult_file_sink.h"
 
+#include <gen_cpp/DataSinks_types.h>
+#include <glog/logging.h>
+#include <time.h>
+
+#include <new>
+#include <ostream>
+
 #include "common/config.h"
-#include "exprs/expr.h"
+#include "common/object_pool.h"
 #include "runtime/buffer_control_block.h"
-#include "runtime/exec_env.h"
-#include "runtime/file_result_writer.h"
 #include "runtime/result_buffer_mgr.h"
-#include "runtime/result_file_sink.h"
-#include "runtime/row_batch.h"
 #include "runtime/runtime_state.h"
-#include "util/uid_util.h"
-#include "vec/runtime/vfile_result_writer.h"
+#include "vec/exprs/vexpr.h"
+
+namespace doris {
+class TExpr;
+} // namespace doris
 
 namespace doris::vectorized {
 
-VResultFileSink::VResultFileSink(ObjectPool* pool, const RowDescriptor& row_desc,
-                                 const TResultFileSink& sink, int per_channel_buffer_size,
-                                 bool send_query_statistics_with_every_batch,
+VResultFileSink::VResultFileSink(const RowDescriptor& row_desc,
                                  const std::vector<TExpr>& t_output_expr)
-        : VDataStreamSender(pool, row_desc, per_channel_buffer_size,
-                            send_query_statistics_with_every_batch),
-          _t_output_expr(t_output_expr) {
-    CHECK(sink.__isset.file_options);
-    _file_opts.reset(new ResultFileOptions(sink.file_options));
-    CHECK(sink.__isset.storage_backend_type);
-    _storage_type = sink.storage_backend_type;
-    _is_top_sink = true;
+        : AsyncWriterSink<VFileResultWriter, VRESULT_FILE_SINK>(row_desc, t_output_expr) {}
 
-    _name = "VResultFileSink";
-    //for impl csv_with_name and csv_with_names_and_types
-    _header_type = sink.header_type;
-    _header = sink.header;
-}
-
-VResultFileSink::VResultFileSink(ObjectPool* pool, int sender_id, const RowDescriptor& row_desc,
-                                 const TResultFileSink& sink,
+VResultFileSink::VResultFileSink(RuntimeState* state, ObjectPool* pool, int sender_id,
+                                 const RowDescriptor& row_desc, const TResultFileSink& sink,
                                  const std::vector<TPlanFragmentDestination>& destinations,
-                                 int per_channel_buffer_size,
-                                 bool send_query_statistics_with_every_batch,
                                  const std::vector<TExpr>& t_output_expr, DescriptorTbl& descs)
-        : VDataStreamSender(pool, sender_id, row_desc, destinations, per_channel_buffer_size,
-                            send_query_statistics_with_every_batch),
-          _t_output_expr(t_output_expr),
+        : AsyncWriterSink<VFileResultWriter, VRESULT_FILE_SINK>(row_desc, t_output_expr),
           _output_row_descriptor(descs.get_tuple_descriptor(sink.output_tuple_id), false) {
-    CHECK(sink.__isset.file_options);
-    _file_opts.reset(new ResultFileOptions(sink.file_options));
-    CHECK(sink.__isset.storage_backend_type);
-    _storage_type = sink.storage_backend_type;
     _is_top_sink = false;
-    DCHECK_EQ(destinations.size(), 1);
-    _channel_shared_ptrs.emplace_back(new Channel(
-            this, _output_row_descriptor, destinations[0].brpc_server,
-            destinations[0].fragment_instance_id, sink.dest_node_id, _buf_size, true, true));
-    _channels.push_back(_channel_shared_ptrs.back().get());
-
-    _name = "VResultFileSink";
-    //for impl csv_with_name and csv_with_names_and_types
-    _header_type = sink.header_type;
-    _header = sink.header;
+    CHECK_EQ(destinations.size(), 1);
+    _stream_sender.reset(new VDataStreamSender(state, pool, sender_id, row_desc, sink.dest_node_id,
+                                               destinations));
 }
 
 Status VResultFileSink::init(const TDataSink& tsink) {
-    return Status::OK();
-}
+    if (!_is_top_sink) {
+        RETURN_IF_ERROR(_stream_sender->init(tsink));
+    }
 
-Status VResultFileSink::prepare_exprs(RuntimeState* state) {
-    // From the thrift expressions create the real exprs.
-    RETURN_IF_ERROR(
-            VExpr::create_expr_trees(state->obj_pool(), _t_output_expr, &_output_vexpr_ctxs));
-    // Prepare the exprs to run.
-    RETURN_IF_ERROR(VExpr::prepare(_output_vexpr_ctxs, state, _row_desc));
-    return Status::OK();
+    auto& sink = tsink.result_file_sink;
+    CHECK(sink.__isset.file_options);
+    _file_opts.reset(new ResultFileOptions(sink.file_options));
+    CHECK(sink.__isset.storage_backend_type);
+    _storage_type = sink.storage_backend_type;
+
+    //for impl csv_with_name and csv_with_names_and_types
+    _header_type = sink.header_type;
+    _header = sink.header;
+
+    return VExpr::create_expr_trees(_t_output_expr, _output_vexpr_ctxs);
 }
 
 Status VResultFileSink::prepare(RuntimeState* state) {
-    RETURN_IF_ERROR(DataSink::prepare(state));
-    std::stringstream title;
-    title << "VResultFileSink (fragment_instance_id=" << print_id(state->fragment_instance_id())
-          << ")";
-    // create profile
-    _profile = state->obj_pool()->add(new RuntimeProfile(title.str()));
-    // prepare output_expr
-    RETURN_IF_ERROR(prepare_exprs(state));
+    RETURN_IF_ERROR(AsyncWriterSink::prepare(state));
 
     CHECK(_file_opts.get() != nullptr);
     if (_is_top_sink) {
         // create sender
         RETURN_IF_ERROR(state->exec_env()->result_mgr()->create_sender(
-                state->fragment_instance_id(), _buf_size, &_sender));
+                state->fragment_instance_id(), _buf_size, &_sender, state->enable_pipeline_exec(),
+                state->execution_timeout()));
         // create writer
         _writer.reset(new (std::nothrow) VFileResultWriter(
                 _file_opts.get(), _storage_type, state->fragment_instance_id(), _output_vexpr_ctxs,
-                _profile, _sender.get(), nullptr, state->return_object_data_as_binary(),
+                _sender.get(), nullptr, state->return_object_data_as_binary(),
                 _output_row_descriptor));
     } else {
         // init channel
-        _profile = _pool->add(new RuntimeProfile(title.str()));
-        _state = state;
-        _serialize_batch_timer = ADD_TIMER(profile(), "SerializeBatchTime");
-        _bytes_sent_counter = ADD_COUNTER(profile(), "BytesSent", TUnit::BYTES);
-        _local_bytes_send_counter = ADD_COUNTER(profile(), "LocalBytesSent", TUnit::BYTES);
-        _uncompressed_bytes_counter =
-                ADD_COUNTER(profile(), "UncompressedRowBatchSize", TUnit::BYTES);
-        // create writer
-        _output_block.reset(new Block(_output_row_descriptor.tuple_descriptors()[0]->slots(), 1));
+        _output_block =
+                Block::create_unique(_output_row_descriptor.tuple_descriptors()[0]->slots(), 1);
         _writer.reset(new (std::nothrow) VFileResultWriter(
                 _file_opts.get(), _storage_type, state->fragment_instance_id(), _output_vexpr_ctxs,
-                _profile, nullptr, _output_block.get(), state->return_object_data_as_binary(),
+                nullptr, _output_block.get(), state->return_object_data_as_binary(),
                 _output_row_descriptor));
+        RETURN_IF_ERROR(_stream_sender->prepare(state));
+        _profile->add_child(_stream_sender->profile(), true, nullptr);
     }
     _writer->set_header_info(_header_type, _header);
-    RETURN_IF_ERROR(_writer->init(state));
-    for (int i = 0; i < _channels.size(); ++i) {
-        RETURN_IF_ERROR(_channels[i]->init(state));
-    }
     return Status::OK();
 }
 
 Status VResultFileSink::open(RuntimeState* state) {
-    START_AND_SCOPE_SPAN(state->get_tracer(), span, "VResultFileSink::open");
-    return VExpr::open(_output_vexpr_ctxs, state);
-}
-
-Status VResultFileSink::send(RuntimeState* state, RowBatch* batch) {
-    return Status::NotSupported("Not Implemented VResultFileSink Node::get_next scalar");
-}
-
-Status VResultFileSink::send(RuntimeState* state, Block* block) {
-    INIT_AND_SCOPE_SEND_SPAN(state->get_tracer(), _send_span, "VResultFileSink::send");
-    RETURN_IF_ERROR(_writer->append_block(*block));
-    return Status::OK();
+    if (!_is_top_sink) {
+        RETURN_IF_ERROR(_stream_sender->open(state));
+    }
+    return AsyncWriterSink::open(state);
 }
 
 Status VResultFileSink::close(RuntimeState* state, Status exec_status) {
@@ -154,61 +112,44 @@ Status VResultFileSink::close(RuntimeState* state, Status exec_status) {
         return Status::OK();
     }
 
-    START_AND_SCOPE_SPAN(state->get_tracer(), span, "VResultFileSink::close");
     Status final_status = exec_status;
-    // close the writer
+    Status writer_st = Status::OK();
     if (_writer) {
-        Status st = _writer->close();
-        if (!st.ok() && exec_status.ok()) {
-            // close file writer failed, should return this error to client
-            final_status = st;
+        // For pipeline engine, the writer is always closed in async thread process_block
+        if (state->enable_pipeline_exec()) {
+            writer_st = _writer->get_writer_status();
+        } else {
+            writer_st = _writer->close(exec_status);
         }
     }
+
+    if (!writer_st.ok() && exec_status.ok()) {
+        // close file writer failed, should return this error to client
+        final_status = writer_st;
+    }
+
     if (_is_top_sink) {
         // close sender, this is normal path end
         if (_sender) {
-            _sender->update_num_written_rows(_writer == nullptr ? 0 : _writer->get_written_rows());
-            _sender->close(final_status);
+            _sender->update_return_rows(_writer == nullptr ? 0 : _writer->get_written_rows());
+            static_cast<void>(_sender->close(final_status));
         }
-        state->exec_env()->result_mgr()->cancel_at_time(
+        static_cast<void>(state->exec_env()->result_mgr()->cancel_at_time(
                 time(nullptr) + config::result_buffer_cancelled_interval_time,
-                state->fragment_instance_id());
+                state->fragment_instance_id()));
     } else {
         if (final_status.ok()) {
-            RETURN_IF_ERROR(serialize_block(_output_block.get(), _cur_pb_block, _channels.size()));
-            for (auto channel : _channels) {
-                RETURN_IF_ERROR(channel->send_block(_cur_pb_block));
+            auto st = _stream_sender->send(state, _output_block.get(), true);
+            if (!st.template is<ErrorCode::END_OF_FILE>()) {
+                RETURN_IF_ERROR(st);
             }
         }
-        Status final_st = Status::OK();
-        for (int i = 0; i < _channels.size(); ++i) {
-            Status st = _channels[i]->close(state);
-            if (!st.ok() && final_st.ok()) {
-                final_st = st;
-            }
-        }
-        // wait all channels to finish
-        for (int i = 0; i < _channels.size(); ++i) {
-            Status st = _channels[i]->close_wait(state);
-            if (!st.ok() && final_st.ok()) {
-                final_st = st;
-            }
-        }
+        RETURN_IF_ERROR(_stream_sender->close(state, final_status));
         _output_block->clear();
     }
 
-    VExpr::close(_output_vexpr_ctxs, state);
-
     _closed = true;
     return Status::OK();
-}
-
-void VResultFileSink::set_query_statistics(std::shared_ptr<QueryStatistics> statistics) {
-    if (_is_top_sink) {
-        _sender->set_query_statistics(statistics);
-    } else {
-        _query_statistics = statistics;
-    }
 }
 
 } // namespace doris::vectorized

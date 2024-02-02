@@ -20,12 +20,12 @@ package org.apache.doris.analysis;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.ScalarType;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.CaseSensibility;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.PatternMatcher;
+import org.apache.doris.common.PatternMatcherWrapper;
 import org.apache.doris.common.UserException;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
@@ -34,25 +34,40 @@ import org.apache.doris.qe.ShowResultSetMetaData;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 
+import java.util.List;
 import java.util.function.Predicate;
 
 public class ShowRestoreStmt extends ShowStmt {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
             .add("JobId").add("Label").add("Timestamp").add("DbName").add("State")
             .add("AllowLoad").add("ReplicationNum").add("ReplicaAllocation").add("ReserveReplica")
-            .add("RestoreObjs").add("CreateTime").add("MetaPreparedTime").add("SnapshotFinishedTime")
-            .add("DownloadFinishedTime").add("FinishedTime").add("UnfinishedTasks").add("Progress")
-            .add("TaskErrMsg").add("Status").add("Timeout")
+            .add("ReserveDynamicPartitionEnable").add("RestoreObjs").add("CreateTime").add("MetaPreparedTime")
+            .add("SnapshotFinishedTime").add("DownloadFinishedTime").add("FinishedTime").add("UnfinishedTasks")
+            .add("Progress").add("TaskErrMsg").add("Status").add("Timeout")
+            .build();
+    public static final ImmutableList<String> BRIEF_TITLE_NAMES = new ImmutableList.Builder<String>()
+            .add("JobId").add("Label").add("Timestamp").add("DbName").add("State")
+            .add("AllowLoad").add("ReplicationNum").add("ReplicaAllocation").add("ReserveReplica")
+            .add("ReserveDynamicPartitionEnable").add("CreateTime").add("MetaPreparedTime")
+            .add("SnapshotFinishedTime").add("DownloadFinishedTime").add("FinishedTime").add("UnfinishedTasks")
+            .add("Status").add("Timeout")
             .build();
 
     private String dbName;
     private Expr where;
     private String labelValue;
     private boolean isAccurateMatch;
+    private boolean needBriefResult;
 
     public ShowRestoreStmt(String dbName, Expr where) {
         this.dbName = dbName;
         this.where = where;
+    }
+
+    public ShowRestoreStmt(String dbName, Expr where, boolean needBriefResult) {
+        this.dbName = dbName;
+        this.where = where;
+        this.needBriefResult = needBriefResult;
     }
 
     public String getDbName() {
@@ -71,12 +86,10 @@ public class ShowRestoreStmt extends ShowStmt {
             if (Strings.isNullOrEmpty(dbName)) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
             }
-        } else {
-            dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
         }
 
         // check auth
-        if (!Env.getCurrentEnv().getAuth().checkDbPriv(ConnectContext.get(), dbName, PrivPredicate.LOAD)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkDbPriv(ConnectContext.get(), dbName, PrivPredicate.LOAD)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_DBACCESS_DENIED_ERROR,
                     ConnectContext.get().getQualifiedUser(), dbName);
         }
@@ -135,7 +148,9 @@ public class ShowRestoreStmt extends ShowStmt {
     @Override
     public ShowResultSetMetaData getMetaData() {
         ShowResultSetMetaData.Builder builder = ShowResultSetMetaData.builder();
-        for (String title : TITLE_NAMES) {
+
+        List<String> titleNames = needBriefResult ? BRIEF_TITLE_NAMES : TITLE_NAMES;
+        for (String title : titleNames) {
             builder.addColumn(new Column(title, ScalarType.createVarchar(30)));
         }
         return builder.build();
@@ -144,7 +159,11 @@ public class ShowRestoreStmt extends ShowStmt {
     @Override
     public String toSql() {
         StringBuilder builder = new StringBuilder();
-        builder.append("SHOW RESTORE");
+        if (needBriefResult) {
+            builder.append("SHOW BRIEF RESTORE");
+        } else {
+            builder.append("SHOW RESTORE");
+        }
         if (dbName != null) {
             builder.append(" FROM `").append(dbName).append("` ");
         }
@@ -167,6 +186,10 @@ public class ShowRestoreStmt extends ShowStmt {
         return isAccurateMatch;
     }
 
+    public boolean isNeedBriefResult() {
+        return needBriefResult;
+    }
+
     public Expr getWhere() {
         return where;
     }
@@ -179,7 +202,7 @@ public class ShowRestoreStmt extends ShowStmt {
             return CaseSensibility.LABEL.getCaseSensibility()
                     ? label -> label.equals(labelValue) : label -> label.equalsIgnoreCase(labelValue);
         } else {
-            PatternMatcher patternMatcher = PatternMatcher.createMysqlPattern(
+            PatternMatcher patternMatcher = PatternMatcherWrapper.createMysqlPattern(
                     labelValue, CaseSensibility.LABEL.getCaseSensibility());
             return patternMatcher::match;
         }

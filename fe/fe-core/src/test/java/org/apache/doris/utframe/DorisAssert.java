@@ -30,7 +30,6 @@ import org.apache.doris.analysis.SqlParser;
 import org.apache.doris.analysis.SqlScanner;
 import org.apache.doris.analysis.StatementBase;
 import org.apache.doris.catalog.Env;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.util.SqlParserUtils;
 import org.apache.doris.planner.Planner;
@@ -38,9 +37,8 @@ import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.QueryState;
 import org.apache.doris.qe.SessionVariable;
 import org.apache.doris.qe.StmtExecutor;
-import org.apache.doris.system.SystemInfoService;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.Assert;
 
 import java.io.IOException;
@@ -75,7 +73,7 @@ public class DorisAssert {
     }
 
     public DorisAssert useDatabase(String dbName) {
-        ctx.setDatabase(ClusterNamespace.getFullName(SystemInfoService.DEFAULT_CLUSTER, dbName));
+        ctx.setDatabase(dbName);
         return this;
     }
 
@@ -127,7 +125,7 @@ public class DorisAssert {
         Env.getCurrentEnv().createMaterializedView(createMaterializedViewStmt);
         checkAlterJob();
         // waiting table state to normal
-        Thread.sleep(100);
+        Thread.sleep(1000);
         return this;
     }
 
@@ -137,7 +135,7 @@ public class DorisAssert {
         Env.getCurrentEnv().alterTable(alterTableStmt);
         checkAlterJob();
         // waiting table state to normal
-        Thread.sleep(100);
+        Thread.sleep(1000);
         return this;
     }
 
@@ -169,11 +167,12 @@ public class DorisAssert {
 
         public QueryAssert(ConnectContext connectContext, String sql) {
             this.connectContext = connectContext;
+            this.connectContext.getState().setIsQuery(true);
             this.sql = sql;
         }
 
         public void explainContains(String... keywords) throws Exception {
-            Assert.assertTrue(Stream.of(keywords).allMatch(explainQuery()::contains));
+            Assert.assertTrue(explainQuery(), Stream.of(keywords).allMatch(explainQuery()::contains));
         }
 
         public void explainContains(String keywords, int count) throws Exception {
@@ -204,7 +203,7 @@ public class DorisAssert {
                 }
             }
             Planner planner = stmtExecutor.planner();
-            String explainString = planner.getExplainString(new ExplainOptions(false, false));
+            String explainString = planner.getExplainString(new ExplainOptions(false, false, false));
             System.out.println(explainString);
             return explainString;
         }

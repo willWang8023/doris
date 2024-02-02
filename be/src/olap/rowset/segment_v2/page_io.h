@@ -17,14 +17,13 @@
 
 #pragma once
 
+#include <gen_cpp/segment_v2.pb.h>
+
 #include <vector>
 
 #include "common/logging.h"
 #include "common/status.h"
-#include "gen_cpp/segment_v2.pb.h"
-#include "io/fs/file_reader.h"
-#include "olap/rowset/segment_v2/encoding_info.h"
-#include "olap/rowset/segment_v2/page_handle.h"
+#include "io/io_common.h"
 #include "olap/rowset/segment_v2/page_pointer.h"
 #include "util/slice.h"
 
@@ -33,18 +32,29 @@ namespace doris {
 class BlockCompressionCodec;
 struct OlapReaderStatistics;
 
-namespace fs {
-class ReadableBlock;
-class WritableBlock;
-} // namespace fs
-
 namespace io {
 class FileWriter;
+class FileReader;
 } // namespace io
 
 namespace segment_v2 {
+class EncodingInfo;
+class PageHandle;
 
 struct PageReadOptions {
+    // whether to verify page checksum
+    bool verify_checksum = true;
+    // whether to use page cache in read path
+    bool use_page_cache = false;
+    // if true, use DURABLE CachePriority in page cache
+    // currently used for in memory olap table
+    bool kept_in_memory = false;
+    // index_page should not be pre-decoded
+    bool pre_decode = true;
+    // for page cache allocation
+    // page types are divided into DATA_PAGE & INDEX_PAGE
+    // INDEX_PAGE including index_page, dict_page and short_key_page
+    PageTypePB type;
     // block to read page
     io::FileReader* file_reader = nullptr;
     // location of the page
@@ -53,28 +63,25 @@ struct PageReadOptions {
     BlockCompressionCodec* codec = nullptr;
     // used to collect IO metrics
     OlapReaderStatistics* stats = nullptr;
-    // whether to verify page checksum
-    bool verify_checksum = true;
-    // whether to use page cache in read path
-    bool use_page_cache = true;
-    // if true, use DURABLE CachePriority in page cache
-    // currently used for in memory olap table
-    bool kept_in_memory = false;
-    // for page cache allocation
-    // page types are divided into DATA_PAGE & INDEX_PAGE
-    // INDEX_PAGE including index_page, dict_page and short_key_page
-    PageTypePB type;
 
     const EncodingInfo* encoding_info = nullptr;
 
-    // index_page should not be pre-decoded
-    bool pre_decode = true;
+    const io::IOContext& io_ctx;
 
     void sanity_check() const {
         CHECK_NOTNULL(file_reader);
         CHECK_NOTNULL(stats);
     }
 };
+
+inline ostream& operator<<(ostream& os, const PageReadOptions& opt) {
+    return os << "PageReadOptions { verify_checksum=" << opt.verify_checksum
+              << " use_page_cache=" << opt.use_page_cache
+              << " kept_in_memory=" << opt.kept_in_memory << " pre_decode=" << opt.pre_decode
+              << " type=" << opt.type << " page_pointer=" << opt.page_pointer
+              << " has_codec=" << (opt.codec != nullptr)
+              << " has_encoding_info=" << (opt.encoding_info != nullptr) << " }";
+}
 
 // Utility class for read and write page. All types of page share the same general layout:
 //     Page := PageBody, PageFooter, FooterSize(4), Checksum(4)

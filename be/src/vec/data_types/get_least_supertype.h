@@ -20,7 +20,16 @@
 
 #pragma once
 
-#include <vec/data_types/data_type.h>
+#include <parallel_hashmap/phmap.h>
+
+#include "common/status.h"
+#include "vec/data_types/data_type.h"
+
+namespace doris {
+namespace vectorized {
+enum class TypeIndex;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 
@@ -30,6 +39,20 @@ namespace doris::vectorized {
   * Examples: least common supertype for UInt8, Int8 - Int16.
   * Examples: there is no least common supertype for Array(UInt8), Int8.
   */
-DataTypePtr get_least_supertype(const DataTypes& types);
+
+enum class LeastSupertypeOnError {
+    Throw,
+    String,
+    Jsonb,
+    Null,
+};
+
+using TypeIndexSet = phmap::flat_hash_set<TypeIndex>;
+
+template <LeastSupertypeOnError on_error = LeastSupertypeOnError::Throw>
+void get_least_supertype(const DataTypes& types, DataTypePtr* type);
+
+template <LeastSupertypeOnError on_error = LeastSupertypeOnError::Throw>
+void get_least_supertype(const TypeIndexSet& types, DataTypePtr* type);
 
 } // namespace doris::vectorized

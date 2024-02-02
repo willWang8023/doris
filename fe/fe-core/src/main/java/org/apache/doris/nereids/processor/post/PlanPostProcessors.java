@@ -19,6 +19,8 @@ package org.apache.doris.nereids.processor.post;
 
 import org.apache.doris.nereids.CascadesContext;
 import org.apache.doris.nereids.trees.plans.physical.PhysicalPlan;
+import org.apache.doris.qe.ConnectContext;
+import org.apache.doris.thrift.TRuntimeFilterMode;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
@@ -36,10 +38,16 @@ public class PlanPostProcessors {
         this.cascadesContext = Objects.requireNonNull(cascadesContext, "cascadesContext can not be null");
     }
 
+    /**
+     * post process
+     *
+     * @param physicalPlan input plan
+     * @return physical plan
+     */
     public PhysicalPlan process(PhysicalPlan physicalPlan) {
         PhysicalPlan resultPlan = physicalPlan;
         for (PlanPostProcessor processor : getProcessors()) {
-            resultPlan = (PhysicalPlan) physicalPlan.accept(processor, cascadesContext);
+            resultPlan = (PhysicalPlan) processor.processRoot(resultPlan, cascadesContext);
         }
         return resultPlan;
     }
@@ -50,9 +58,25 @@ public class PlanPostProcessors {
     public List<PlanPostProcessor> getProcessors() {
         // add processor if we need
         Builder<PlanPostProcessor> builder = ImmutableList.builder();
-        if (cascadesContext.getConnectContext().getSessionVariable().isEnableNereidsRuntimeFilter()) {
+        builder.add(new PushDownFilterThroughProject());
+        builder.add(new MergeProjectPostProcessor());
+        builder.add(new RecomputeLogicalPropertiesProcessor());
+        builder.add(new AddOffsetIntoDistribute());
+        builder.add(new TopNScanOpt());
+        // after generate rf, DO NOT replace PLAN NODE
+        builder.add(new FragmentProcessor());
+        if (!cascadesContext.getConnectContext().getSessionVariable().getRuntimeFilterMode()
+                        .toUpperCase().equals(TRuntimeFilterMode.OFF.name())) {
+            builder.add(new RegisterParent());
             builder.add(new RuntimeFilterGenerator());
+            if (ConnectContext.get().getSessionVariable().enableRuntimeFilterPrune) {
+                builder.add(new RuntimeFilterPruner());
+                if (ConnectContext.get().getSessionVariable().runtimeFilterPruneForExternal) {
+                    builder.add(new RuntimeFilterPrunerForExternalTable());
+                }
+            }
         }
+        builder.add(new Validator());
         return builder.build();
     }
 }

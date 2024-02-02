@@ -18,7 +18,6 @@
 package org.apache.doris.nereids.trees.expressions;
 
 import org.apache.doris.nereids.exceptions.UnboundException;
-import org.apache.doris.nereids.trees.expressions.shape.LeafExpression;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
 import org.apache.doris.nereids.types.BooleanType;
@@ -28,22 +27,32 @@ import com.google.common.base.Preconditions;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Exists subquery expression.
  */
-public class Exists extends SubqueryExpr implements LeafExpression {
+public class Exists extends SubqueryExpr {
+
     private final boolean isNot;
 
     public Exists(LogicalPlan subquery, boolean isNot) {
         super(Objects.requireNonNull(subquery, "subquery can not be null"));
-        this.isNot = Objects.requireNonNull(isNot, "isNot can not be null");
+        this.isNot = isNot;
     }
 
     public Exists(LogicalPlan subquery, List<Slot> correlateSlots, boolean isNot) {
+        this(Objects.requireNonNull(subquery, "subquery can not be null"),
+                Objects.requireNonNull(correlateSlots, "subquery can not be null"),
+                Optional.empty(), isNot);
+    }
+
+    public Exists(LogicalPlan subquery, List<Slot> correlateSlots,
+                  Optional<Expression> typeCoercionExpr, boolean isNot) {
         super(Objects.requireNonNull(subquery, "subquery can not be null"),
-                Objects.requireNonNull(correlateSlots, "subquery can not be null"));
-        this.isNot = Objects.requireNonNull(isNot, "isNot can not be null");
+                Objects.requireNonNull(correlateSlots, "subquery can not be null"),
+                typeCoercionExpr);
+        this.isNot = isNot;
     }
 
     public boolean isNot() {
@@ -77,19 +86,25 @@ public class Exists extends SubqueryExpr implements LeafExpression {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
+        if (!super.equals(o)) {
             return false;
         }
         Exists other = (Exists) o;
-        return Objects.equals(this.queryPlan, other.getQueryPlan())
-                && Objects.equals(this.isNot, other.isNot());
+        return this.isNot == other.isNot;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(this.queryPlan, this.isNot);
+    }
+
+    @Override
+    public Expression withTypeCoercion(DataType dataType) {
+        return this;
+    }
+
+    @Override
+    public Exists withSubquery(LogicalPlan subquery) {
+        return new Exists(subquery, correlateSlots, typeCoercionExpr, isNot);
     }
 }

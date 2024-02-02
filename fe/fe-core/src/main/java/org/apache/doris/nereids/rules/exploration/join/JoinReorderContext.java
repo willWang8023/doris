@@ -20,10 +20,13 @@ package org.apache.doris.nereids.rules.exploration.join;
 /**
  * JoinReorderContext for Duplicate free.
  * Paper:
+ * - The Complexity of Transformation-Based Join Enumeration
  * - Optimizing Join Enumeration in Transformation-based Query Optimizers
  * - Improving Join Reorderability with Compensation Operators
  */
 public class JoinReorderContext {
+    public static final JoinReorderContext EMPTY = new JoinReorderContext();
+
     // left deep tree
     private boolean hasCommute = false;
     private boolean hasLAsscom = false;

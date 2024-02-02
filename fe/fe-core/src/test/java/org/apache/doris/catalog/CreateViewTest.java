@@ -21,7 +21,6 @@ import org.apache.doris.analysis.AlterViewStmt;
 import org.apache.doris.analysis.CreateDbStmt;
 import org.apache.doris.analysis.CreateTableStmt;
 import org.apache.doris.analysis.CreateViewStmt;
-import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.common.ExceptionChecker;
 import org.apache.doris.qe.ConnectContext;
@@ -44,7 +43,6 @@ public class CreateViewTest {
     @BeforeClass
     public static void beforeClass() throws Exception {
         UtFrameUtils.createDorisCluster(runningDir);
-        Config.enable_array_type = true;
         // create connect context
         connectContext = UtFrameUtils.createDefaultCtx();
         // create database
@@ -111,7 +109,7 @@ public class CreateViewTest {
         ExceptionChecker.expectThrowsNoException(
                 () -> createView("create view test.view8 as select * from test.tbl2;"));
 
-        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException("default_cluster:test");
+        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException("test");
 
         View view1 = (View) db.getTableOrDdlException("view1");
         Assert.assertEquals(4, view1.getFullSchema().size());
@@ -134,11 +132,6 @@ public class CreateViewTest {
         View view4 = (View) db.getTableOrDdlException("view4");
         Assert.assertEquals(1, view4.getFullSchema().size());
         Assert.assertNotNull(view4.getColumn("s1"));
-
-        View view5 = (View) db.getTableOrDdlException("view5");
-        Assert.assertTrue(view5.getDdlSql().contains("hour"));
-        Assert.assertTrue(view5.getDdlSql().contains("now"));
-        Assert.assertTrue(view5.getDdlSql().contains("curdate"));
 
         View view6 = (View) db.getTableOrDdlException("view6");
         Assert.assertEquals(4, view6.getFullSchema().size());
@@ -177,10 +170,10 @@ public class CreateViewTest {
         String originStmt = "select k1 as kc1, sum(k2) as kc2 from test.tbl1 group by kc1";
         ExceptionChecker.expectThrowsNoException(
                 () -> createView("create view test.alter1 as " + originStmt));
-        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException("default_cluster:test");
+        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException("test");
         View alter1 = (View) db.getTableOrDdlException("alter1");
         Assert.assertEquals(
-                "SELECT `k1` AS `kc1`, sum(`k2`) AS `kc2` FROM `default_cluster:test`.`tbl1` GROUP BY `kc1`",
+                "SELECT `k1` AS `kc1`, sum(`k2`) AS `kc2` FROM `test`.`tbl1` GROUP BY `kc1`",
                 alter1.getInlineViewDef());
 
         String alterStmt
@@ -191,9 +184,9 @@ public class CreateViewTest {
 
         alter1 = (View) db.getTableOrDdlException("alter1");
         Assert.assertEquals(
-                "WITH test1_cte(w1, w2) "
-                        + "AS (SELECT `k1` AS `k1`, `k2` AS `k2` FROM `default_cluster:test`.`tbl1`) "
-                        + "SELECT `w1` AS `c1`, sum(`w2`) AS `c2` FROM `test1_cte` WHERE `w1` > 10 GROUP BY `w1` ORDER BY `w1` ASC",
+                "WITH test1_cte(w1, w2) AS (SELECT `k1`, `k2` FROM `test`.`tbl1`) "
+                        + "SELECT `w1` AS `c1`, sum(`w2`) AS `c2` FROM `test1_cte` WHERE (`w1` > 10) GROUP BY `w1` "
+                        + "ORDER BY `w1` ASC NULLS FIRST",
                 alter1.getInlineViewDef());
     }
 }

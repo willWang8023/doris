@@ -6,7 +6,7 @@
 
 ---
 
-<!-- 
+<!--
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
 distributed with this work for additional information
@@ -96,7 +96,7 @@ under the License.
 | OLAP_ERR_CE_TRY_CE_LOCK_ERROR | -306 | Attempt to obtain execution command lock error |
 | Tablet error exception code | | |
 | OLAP_ERR_TABLE_VERSION_DUPLICATE_ERROR | -400 | Tablet copy version error |
-| OLAP_ERR_TABLE_VERSION_INDEX_MISMATCH_ERROR | -401 | teblet version index mismatch exception |
+| OLAP_ERR_TABLE_VERSION_INDEX_MISMATCH_ERROR | -401 | tablet version index mismatch exception |
 | OLAP_ERR_TABLE_INDEX_VALIDATE_ERROR | -402 | The initial version of the tablet is not checked here, because if the BE is restarted during a schema-change of a tablet, we may encounter an empty tablet exception |
 | OLAP_ERR_TABLE_INDEX_FIND_ERROR | -403 | Unable to get the position of the first block or failure to find the last block of the block will cause this exception |
 | OLAP_ERR_TABLE_CREATE_FROM_HEADER_ERROR | -404 | This exception is triggered when the tablet cannot be loaded |
@@ -173,7 +173,6 @@ under the License.
 | RowBlock error code | | |
 | OLAP_ERR_ROWBLOCK_DECOMPRESS_ERROR | -1300 | Rowblock decompression error |
 | OLAP_ERR_ROWBLOCK_FIND_ROW_EXCEPTION | -1301 | Failed to obtain Block Entry |
-| OLAP_ERR_ROWBLOCK_READ_INFO_ERROR | -1302 | Error reading Rowblock information |
 | Tablet metadata error | | |
 | OLAP_ERR_HEADER_ADD_VERSION | -1400 | Tablet metadata increase version |
 | OLAP_ERR_HEADER_DELETE_VERSION | -1401 | Tablet metadata deletion version |
@@ -199,7 +198,7 @@ under the License.
 | OLAP_ERR_PREVIOUS_SCHEMA_CHANGE_NOT_FINISHED | -1603 | The previous schema change is not completed |
 | OLAP_ERR_SCHEMA_CHANGE_INFO_INVALID | -1604 | Schema change information is invalid |
 | OLAP_ERR_QUERY_SPLIT_KEY_ERR | -1605 | Query Split key error |
-| OLAP_ERR_DATA_QUALITY_ERR | -1606 | Errors caused by data quality issues during schema changes/materialized views |
+| OLAP_ERR_DATA_QUALITY_ERROR | -1606 | Errors caused by data quality issues or reach memory limit during schema changes/materialized views |
 | Column File error code | | |
 | OLAP_ERR_COLUMN_DATA_LOAD_BLOCK | -1700 | Error loading column data block |
 | OLAP_ERR_COLUMN_DATA_RECORD_INDEX | -1701 | Load data record index error |
@@ -245,10 +244,12 @@ under the License.
 | OLAP_ERR_ROWSET_ALREADY_EXIST | -3106 | Rowset already exists |
 | OLAP_ERR_ROWSET_CREATE_READER | -3107 | Rowset failed to create read object |
 | OLAP_ERR_ROWSET_INVALID | -3108 | Rowset is invalid |
-| OLAP_ERR_ROWSET_LOAD_FAILED | -3109 | Rowset load failed |
 | OLAP_ERR_ROWSET_READER_INIT | -3110 | Rowset read object initialization failed |
-| OLAP_ERR_ROWSET_READ_FAILED | -3111 | Rowset read failure |
 | OLAP_ERR_ROWSET_INVALID_STATE_TRANSITION | -3112 | Rowset invalid transaction state |
+| OLAP_ERR_ROWSET_RENAME_FILE_FAILED | -3116 | Rowset failed to rename file |
+| OLAP_ERR_SEGCOMPACTION_INIT_READER | -3117 | Segment Compaction failed to init reader |
+| OLAP_ERR_SEGCOMPACTION_INIT_WRITER | -3118 | Segment Compaction failed to init writer |
+| OLAP_ERR_SEGCOMPACTION_FAILED | -3119 | Segment Compaction failed |
 
 
 

@@ -20,7 +20,6 @@
 
 package org.apache.doris.analysis;
 
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
@@ -53,9 +52,6 @@ public class FunctionName implements Writable {
     public FunctionName(String db, String fn) {
         this.db = db;
         this.fn = fn.toLowerCase();
-        if (this.db != null) {
-            this.db = this.db.toLowerCase();
-        }
     }
 
     public FunctionName(String fn) {
@@ -108,6 +104,10 @@ public class FunctionName implements Writable {
         this.db = db;
     }
 
+    public void setFn(String fn) {
+        this.fn = fn;
+    }
+
     public String getFunction() {
         return fn;
     }
@@ -129,16 +129,11 @@ public class FunctionName implements Writable {
         String db = this.db;
         if (db == null) {
             db = analyzer.getDefaultDb();
-        } else {
-            if (Strings.isNullOrEmpty(analyzer.getClusterName())) {
-                ErrorReport.reportAnalysisException(ErrorCode.ERR_CLUSTER_NAME_NULL);
-            }
-            db = ClusterNamespace.getFullName(analyzer.getClusterName(), db);
         }
         return db;
     }
 
-    public void analyze(Analyzer analyzer) throws AnalysisException {
+    public void analyze(Analyzer analyzer, SetType type) throws AnalysisException {
         if (fn.length() == 0) {
             throw new AnalysisException("Function name can not be empty.");
         }
@@ -153,14 +148,9 @@ public class FunctionName implements Writable {
         }
         if (db == null) {
             db = analyzer.getDefaultDb();
-            if (Strings.isNullOrEmpty(db)) {
+            if (Strings.isNullOrEmpty(db) && type != SetType.GLOBAL) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
             }
-        } else {
-            if (Strings.isNullOrEmpty(analyzer.getClusterName())) {
-                ErrorReport.reportAnalysisException(ErrorCode.ERR_CLUSTER_NAME_NULL);
-            }
-            db = ClusterNamespace.getFullName(analyzer.getClusterName(), db);
         }
     }
 

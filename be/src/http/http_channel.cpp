@@ -18,18 +18,22 @@
 #include "http/http_channel.h"
 
 #include <event2/buffer.h>
+#include <event2/bufferevent.h>
 #include <event2/http.h>
 
-#include <mutex>
+#include <algorithm>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "common/logging.h"
+#include "common/status.h"
 #include "gutil/strings/split.h"
+#include "gutil/strings/strip.h"
 #include "http/http_headers.h"
 #include "http/http_request.h"
-#include "http/http_response.h"
 #include "http/http_status.h"
+#include "util/slice.h"
 #include "util/zlib.h"
 
 namespace doris {
@@ -66,11 +70,17 @@ void HttpChannel::send_reply(HttpRequest* request, HttpStatus status, const std:
     evbuffer_free(evb);
 }
 
-void HttpChannel::send_file(HttpRequest* request, int fd, size_t off, size_t size) {
+void HttpChannel::send_file(HttpRequest* request, int fd, size_t off, size_t size,
+                            bufferevent_rate_limit_group* rate_limit_group) {
     auto evb = evbuffer_new();
     evbuffer_add_file(evb, fd, off, size);
-    evhttp_send_reply(request->get_evhttp_request(), HttpStatus::OK,
-                      default_reason(HttpStatus::OK).c_str(), evb);
+    auto* evhttp_request = request->get_evhttp_request();
+    if (rate_limit_group) {
+        auto* evhttp_connection = evhttp_request_get_connection(evhttp_request);
+        auto* buffer_event = evhttp_connection_get_bufferevent(evhttp_connection);
+        bufferevent_add_to_rate_limit_group(buffer_event, rate_limit_group);
+    }
+    evhttp_send_reply(evhttp_request, HttpStatus::OK, default_reason(HttpStatus::OK).c_str(), evb);
     evbuffer_free(evb);
 }
 

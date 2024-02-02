@@ -71,9 +71,8 @@ while true; do
     esac
 done
 
-if [[ ${HELP} -eq 1 ]]; then
+if [[ "${HELP}" -eq 1 ]]; then
     usage
-    exit
 fi
 
 check_prerequest() {
@@ -93,7 +92,6 @@ export MYSQL_PWD="${PASSWORD}"
 echo "FE_HOST: ${FE_HOST}"
 echo "FE_QUERY_PORT: ${FE_QUERY_PORT}"
 echo "USER: ${USER}"
-echo "PASSWORD: ${PASSWORD}"
 echo "DB: ${DB}"
 
 mysql -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -e "CREATE DATABASE IF NOT EXISTS ${DB}"
@@ -103,3 +101,5 @@ mysql -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -D"${DB}" <"${SSB_DDL}"
 
 echo "Run DDL from ${SSB_FLAT_DDL}"
 mysql -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -D"${DB}" <"${SSB_FLAT_DDL}"
+
+echo "ssb tables has been created"

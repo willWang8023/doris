@@ -18,9 +18,9 @@
 package org.apache.doris.analysis;
 
 import org.apache.doris.analysis.BinaryPredicate.Operator;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.UserException;
+import org.apache.doris.load.loadv2.JobState;
 
 import com.google.common.base.Strings;
 import com.google.common.collect.Sets;
@@ -83,6 +83,14 @@ public class CancelLoadStmt extends DdlStmt {
                 throw new AnalysisException("Only label can use like");
             }
             state = inputValue;
+            try {
+                JobState jobState = JobState.valueOf(state);
+                if (jobState != JobState.PENDING && jobState != JobState.ETL && jobState != JobState.LOADING) {
+                    throw new AnalysisException("invalid state: " + state);
+                }
+            } catch (IllegalArgumentException e) {
+                throw new AnalysisException("invalid state: " + state);
+            }
         }
     }
 
@@ -114,6 +122,9 @@ public class CancelLoadStmt extends DdlStmt {
         if (expr instanceof CompoundPredicate) {
             // current only support label and state
             CompoundPredicate compoundPredicate = (CompoundPredicate) expr;
+            if (CompoundPredicate.Operator.NOT == compoundPredicate.getOp()) {
+                throw new AnalysisException("Current not support NOT operator");
+            }
             for (int i = 0; i < 2; i++) {
                 Expr child = compoundPredicate.getChild(i);
                 if (child instanceof CompoundPredicate) {
@@ -134,8 +145,6 @@ public class CancelLoadStmt extends DdlStmt {
             if (Strings.isNullOrEmpty(dbName)) {
                 throw new AnalysisException("No database selected");
             }
-        } else {
-            dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
         }
 
         // check auth after we get real load job

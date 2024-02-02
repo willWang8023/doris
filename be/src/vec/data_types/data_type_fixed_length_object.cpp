@@ -17,10 +17,18 @@
 
 #include "vec/data_types/data_type_fixed_length_object.h"
 
+#include <glog/logging.h>
+#include <string.h>
+
+#include <ostream>
+
+#include "vec/columns/column.h"
+#include "vec/common/assert_cast.h"
+
 namespace doris::vectorized {
 
 char* DataTypeFixedLengthObject::serialize(const IColumn& column, char* buf,
-                                           int data_version) const {
+                                           int be_exec_version) const {
     // row num
     const auto row_num = column.size();
     *reinterpret_cast<uint32_t*>(buf) = row_num;
@@ -40,7 +48,7 @@ char* DataTypeFixedLengthObject::serialize(const IColumn& column, char* buf,
 }
 
 const char* DataTypeFixedLengthObject::deserialize(const char* buf, IColumn* column,
-                                                   int data_version) const {
+                                                   int be_exec_version) const {
     // row num
     uint32_t row_num = *reinterpret_cast<const uint32_t*>(buf);
     buf += sizeof(uint32_t);

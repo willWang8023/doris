@@ -24,11 +24,13 @@ import org.apache.doris.analysis.AnalyticWindow.Boundary;
 import org.apache.doris.analysis.AnalyticWindow.BoundaryType;
 import org.apache.doris.catalog.AggregateFunction;
 import org.apache.doris.catalog.Function;
+import org.apache.doris.catalog.FunctionSet;
 import org.apache.doris.catalog.PrimitiveType;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.TreeNode;
-import org.apache.doris.common.util.VectorizedUtil;
+import org.apache.doris.nereids.util.Utils;
+import org.apache.doris.qe.SessionVariable;
 import org.apache.doris.thrift.TExprNode;
 
 import com.google.common.base.Joiner;
@@ -42,6 +44,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Representation of an analytic function call with OVER clause.
@@ -63,7 +66,6 @@ import java.util.Objects;
  */
 public class AnalyticExpr extends Expr {
     private static final Logger LOG = LoggerFactory.getLogger(AnalyticExpr.class);
-    private static String NTILE = "NTILE";
 
     private FunctionCallExpr fnCall;
     private final List<Expr> partitionExprs;
@@ -80,6 +82,7 @@ public class AnalyticExpr extends Expr {
     // SQL string of this AnalyticExpr before standardization. Returned in toSqlImpl().
     private String sqlString;
 
+    private static String NTILE = "NTILE";
     private static String LEAD = "LEAD";
     private static String LAG = "LAG";
     private static String FIRSTVALUE = "FIRST_VALUE";
@@ -95,9 +98,6 @@ public class AnalyticExpr extends Expr {
     // Internal function used to implement FIRST_VALUE with a window equal and
     // additional null handling in the backend.
     public static String FIRST_VALUE_REWRITE = "FIRST_VALUE_REWRITE";
-
-    // The function of HLL_UNION_AGG can't be used with a window by now.
-    public static String HLL_UNION_AGG = "HLL_UNION_AGG";
 
     public AnalyticExpr(FunctionCallExpr fnCall, List<Expr> partitionExprs,
                         List<OrderByElement> orderByElements, AnalyticWindow window) {
@@ -145,6 +145,14 @@ public class AnalyticExpr extends Expr {
 
     public AnalyticWindow getWindow() {
         return window;
+    }
+
+    @Override
+    public String getExprName() {
+        if (!this.exprName.isPresent()) {
+            this.exprName = Optional.of(Utils.normalizeName(getFnCall().getExprName(), DEFAULT_EXPR_NAME));
+        }
+        return this.exprName.get();
     }
 
     @Override
@@ -248,7 +256,7 @@ public class AnalyticExpr extends Expr {
             return false;
         }
 
-        return fn.functionName().equalsIgnoreCase(HLL_UNION_AGG);
+        return fn.functionName().equalsIgnoreCase(FunctionSet.HLL_UNION_AGG);
     }
 
     private static boolean isNTileFn(Function fn) {
@@ -265,18 +273,6 @@ public class AnalyticExpr extends Expr {
      * that we want to equal.
      */
     public static Expr rewrite(AnalyticExpr analyticExpr) {
-        Function fn = analyticExpr.getFnCall().getFn();
-        // TODO(zc)
-        // if (AnalyticExpr.isPercentRankFn(fn)) {
-        //     return createPercentRank(analyticExpr);
-        // } else if (AnalyticExpr.isCumeDistFn(fn)) {
-        //     return createCumeDist(analyticExpr);
-        // } else if (AnalyticExpr.isNtileFn(fn)) {
-        //     return createNtile(analyticExpr);
-        // }
-        if (isNTileFn(fn) && !VectorizedUtil.isVectorized()) {
-            return createNTile(analyticExpr);
-        }
         return null;
     }
 
@@ -370,7 +366,8 @@ public class AnalyticExpr extends Expr {
         Expr rangeExpr = boundary.getExpr();
 
         if (!Type.isImplicitlyCastable(
-                    rangeExpr.getType(), orderByElements.get(0).getExpr().getType(), false)) {
+                    rangeExpr.getType(), orderByElements.get(0).getExpr().getType(), false,
+                    SessionVariable.getEnableDecimal256())) {
             throw new AnalysisException(
                 "The value expression of a PRECEDING/FOLLOWING clause of a RANGE window must "
                 + "be implicitly convertible to the ORDER BY expression's type: "
@@ -480,7 +477,7 @@ public class AnalyticExpr extends Expr {
         type = getFnCall().getType();
 
         for (Expr e : partitionExprs) {
-            if (e.isConstant()) {
+            if (e.isLiteral()) {
                 throw new AnalysisException(
                     "Expressions in the PARTITION BY clause must not be constant: "
                     + e.toSql() + " (in " + toSql() + ")");
@@ -488,7 +485,7 @@ public class AnalyticExpr extends Expr {
         }
 
         for (OrderByElement e : orderByElements) {
-            if (e.getExpr().isConstant()) {
+            if (e.getExpr().isLiteral()) {
                 throw new AnalysisException(
                     "Expressions in the ORDER BY clause must not be constant: "
                             + e.getExpr().toSql() + " (in " + toSql() + ")");
@@ -575,20 +572,16 @@ public class AnalyticExpr extends Expr {
 
         standardize(analyzer);
 
-        // But in Vectorized mode, after calculate a window, will be call reset() to reset state,
-        // And then restarted calculate next new window;
-        if (!VectorizedUtil.isVectorized()) {
-            // min/max is not currently supported on sliding windows (i.e. start bound is not
-            // unbounded).
-            if (window != null && isMinMax(fn)
-                    && window.getLeftBoundary().getType() != BoundaryType.UNBOUNDED_PRECEDING) {
-                throw new AnalysisException(
-                    "'" + getFnCall().toSql() + "' is only supported with an "
-                    + "UNBOUNDED PRECEDING start bound.");
-            }
-        }
-
         setChildren();
+
+        String functionName = fn.functionName();
+        if (functionName.equalsIgnoreCase("sum") || functionName.equalsIgnoreCase("max")
+                || functionName.equalsIgnoreCase("min") || functionName.equalsIgnoreCase("avg")) {
+            // sum, max, min and avg in window function should be always nullable
+            Function function = fnCall.fn.clone();
+            function.setNullableMode(Function.NullableMode.ALWAYS_NULLABLE);
+            fnCall.setFn(function);
+        }
     }
 
     /**
@@ -688,8 +681,6 @@ public class AnalyticExpr extends Expr {
                 Preconditions.checkState(getFnCall().getChildren().size() == 3);
             }
 
-            Type type = getFnCall().getChildren().get(2).getType();
-
             try {
                 if (!Type.matchExactType(getFnCall().getChildren().get(0).getType(),
                         getFnCall().getChildren().get(2).getType())) {
@@ -702,10 +693,10 @@ public class AnalyticExpr extends Expr {
                                             + getFnCall().getChildren().get(0).getType());
             }
 
-            if (getFnCall().getChildren().get(2) instanceof CastExpr) {
-                throw new AnalysisException("Type = " + type + " can't not convert to "
-                                            + getFnCall().getChildren().get(0).getType());
-            }
+            // if (getFnCall().getChildren().get(2) instanceof CastExpr) {
+            //     throw new AnalysisException("Type = " + type + " can't not convert to "
+            //                                 + getFnCall().getChildren().get(0).getType());
+            // }
 
             // check the value whether out of range
             checkDefaultValue(analyzer);
@@ -756,28 +747,6 @@ public class AnalyticExpr extends Expr {
                                             window.getLeftBoundary());
                 fnCall = new FunctionCallExpr(new FunctionName(LASTVALUE),
                                               getFnCall().getParams());
-            } else {
-                //TODO: Now we don't want to first_value to rewrite in vectorized mode;
-                //if have to rewrite in future, could exec this rule;
-                if (!VectorizedUtil.isVectorized()) {
-                    List<Expr> paramExprs = Expr.cloneList(getFnCall().getParams().exprs());
-
-                    if (window.getRightBoundary().getType() == BoundaryType.PRECEDING) {
-                        // The number of rows preceding for the end bound determines the number of
-                        // rows at the beginning of each partition that should have a NULL value.
-                        paramExprs.add(window.getRightBoundary().getExpr());
-                    } else {
-                        // -1 indicates that no NULL values are inserted even though we set the end
-                        // bound to the start bound (which is PRECEDING) below; this is different from
-                        // the default behavior of windows with an end bound PRECEDING.
-                        paramExprs.add(new IntLiteral(-1, Type.BIGINT));
-                    }
-
-                    window = new AnalyticWindow(window.getType(),
-                            new Boundary(BoundaryType.UNBOUNDED_PRECEDING, null),
-                            window.getLeftBoundary());
-                    fnCall = new FunctionCallExpr("FIRST_VALUE_REWRITE", new FunctionParams(paramExprs));
-                }
             }
 
             fnCall.setIsAnalyticFnCall(true);
@@ -786,7 +755,7 @@ public class AnalyticExpr extends Expr {
         }
 
         // Reverse the ordering and window for windows ending with UNBOUNDED FOLLOWING,
-        // and and not starting with UNBOUNDED PRECEDING.
+        // and not starting with UNBOUNDED PRECEDING.
         if (window != null
                 && window.getRightBoundary().getType() == BoundaryType.UNBOUNDED_FOLLOWING
                 && window.getLeftBoundary().getType() != BoundaryType.UNBOUNDED_PRECEDING) {
@@ -910,9 +879,8 @@ public class AnalyticExpr extends Expr {
     }
 
     @Override
-    protected Expr substituteImpl(ExprSubstitutionMap sMap, Analyzer analyzer)
-            throws AnalysisException {
-        Expr e = super.substituteImpl(sMap, analyzer);
+    protected Expr substituteImpl(ExprSubstitutionMap sMap, ExprSubstitutionMap disjunctsMap, Analyzer analyzer) {
+        Expr e = super.substituteImpl(sMap, disjunctsMap, analyzer);
         if (!(e instanceof AnalyticExpr)) {
             return e;
         }

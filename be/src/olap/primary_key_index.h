@@ -17,11 +17,15 @@
 
 #pragma once
 
+#include <glog/logging.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <memory>
+
 #include "common/status.h"
-#include "gen_cpp/segment_v2.pb.h"
-#include "io/fs/file_writer.h"
+#include "io/fs/file_reader_writer_fwd.h"
 #include "olap/rowset/segment_v2/bloom_filter.h"
-#include "olap/rowset/segment_v2/bloom_filter_index_reader.h"
 #include "olap/rowset/segment_v2/bloom_filter_index_writer.h"
 #include "olap/rowset/segment_v2/indexed_column_reader.h"
 #include "olap/rowset/segment_v2/indexed_column_writer.h"
@@ -29,6 +33,14 @@
 #include "util/slice.h"
 
 namespace doris {
+class TypeInfo;
+
+namespace io {
+class FileWriter;
+} // namespace io
+namespace segment_v2 {
+class PrimaryKeyIndexMetaPB;
+} // namespace segment_v2
 
 // Build index for primary key.
 // The primary key index is designed in a similar way like RocksDB
@@ -38,8 +50,13 @@ namespace doris {
 // NOTE: for now, it's only used when unique key merge-on-write property enabled.
 class PrimaryKeyIndexBuilder {
 public:
-    PrimaryKeyIndexBuilder(io::FileWriter* file_writer, size_t seq_col_length)
-            : _file_writer(file_writer), _num_rows(0), _size(0), _seq_col_length(seq_col_length) {}
+    PrimaryKeyIndexBuilder(io::FileWriter* file_writer, size_t seq_col_length, size_t rowid_length)
+            : _file_writer(file_writer),
+              _num_rows(0),
+              _size(0),
+              _disk_size(0),
+              _seq_col_length(seq_col_length),
+              _rowid_length(rowid_length) {}
 
     Status init();
 
@@ -49,8 +66,17 @@ public:
 
     uint64_t size() const { return _size; }
 
-    Slice min_key() { return Slice(_min_key.data(), _min_key.size() - _seq_col_length); }
-    Slice max_key() { return Slice(_max_key.data(), _max_key.size() - _seq_col_length); }
+    uint64_t disk_size() const { return _disk_size; }
+
+    // used for be ut
+    uint32_t data_page_num() const { return _primary_key_index_builder->data_page_num(); }
+
+    Slice min_key() {
+        return Slice(_min_key.data(), _min_key.size() - _seq_col_length - _rowid_length);
+    }
+    Slice max_key() {
+        return Slice(_max_key.data(), _max_key.size() - _seq_col_length - _rowid_length);
+    }
 
     Status finalize(segment_v2::PrimaryKeyIndexMetaPB* meta);
 
@@ -58,7 +84,9 @@ private:
     io::FileWriter* _file_writer = nullptr;
     uint32_t _num_rows;
     uint64_t _size;
+    uint64_t _disk_size;
     size_t _seq_col_length;
+    size_t _rowid_length;
 
     faststring _min_key;
     faststring _max_key;
@@ -106,6 +134,8 @@ public:
         DCHECK(_index_parsed);
         return _index_reader->get_memory_size();
     }
+
+    static constexpr size_t ROW_ID_LENGTH = sizeof(uint32_t) + 1;
 
 private:
     bool _index_parsed;

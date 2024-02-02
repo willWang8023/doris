@@ -17,31 +17,56 @@
 
 #include "vec/exec/scan/new_file_scan_node.h"
 
-#include "vec/columns/column_const.h"
-#include "vec/exec/scan/new_file_arrow_scanner.h"
-#include "vec/exec/scan/new_file_text_scanner.h"
-#include "vec/exec/scan/new_olap_scanner.h"
+#include <gen_cpp/PlanNodes_types.h>
+#include <glog/logging.h>
+#include <stddef.h>
+
+#include <algorithm>
+#include <ostream>
+
+#include "common/config.h"
+#include "common/object_pool.h"
 #include "vec/exec/scan/vfile_scanner.h"
-#include "vec/functions/in.h"
+#include "vec/exec/scan/vscanner.h"
+
+namespace doris {
+class DescriptorTbl;
+class RuntimeState;
+} // namespace doris
 
 namespace doris::vectorized {
 
 NewFileScanNode::NewFileScanNode(ObjectPool* pool, const TPlanNode& tnode,
                                  const DescriptorTbl& descs)
-        : VScanNode(pool, tnode, descs),
-          _pre_filter_texprs(tnode.file_scan_node.pre_filter_exprs),
-          _file_scan_node(tnode.file_scan_node) {
+        : VScanNode(pool, tnode, descs) {
     _output_tuple_id = tnode.file_scan_node.tuple_id;
+    _table_name = tnode.file_scan_node.__isset.table_name ? tnode.file_scan_node.table_name : "";
+}
+
+Status NewFileScanNode::init(const TPlanNode& tnode, RuntimeState* state) {
+    RETURN_IF_ERROR(VScanNode::init(tnode, state));
+    return Status::OK();
 }
 
 Status NewFileScanNode::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(VScanNode::prepare(state));
-    _scanner_mem_tracker = std::make_unique<MemTracker>("NewFileScanners");
+    if (state->get_query_ctx() != nullptr &&
+        state->get_query_ctx()->file_scan_range_params_map.count(id()) > 0) {
+        TFileScanRangeParams& params = state->get_query_ctx()->file_scan_range_params_map[id()];
+        _output_tuple_id = params.dest_tuple_id;
+    }
     return Status::OK();
 }
 
-void NewFileScanNode::set_scan_ranges(const std::vector<TScanRangeParams>& scan_ranges) {
-    int max_scanners = config::doris_scanner_thread_pool_thread_num;
+void NewFileScanNode::set_scan_ranges(RuntimeState* state,
+                                      const std::vector<TScanRangeParams>& scan_ranges) {
+    int max_scanners =
+            config::doris_scanner_thread_pool_thread_num / state->query_parallel_instance_num();
+    max_scanners = max_scanners == 0 ? 1 : max_scanners;
+    // For select * from table limit 10; should just use one thread.
+    if (should_run_serial()) {
+        max_scanners = 1;
+    }
     if (scan_ranges.size() <= max_scanners) {
         _scan_ranges = scan_ranges;
     } else {
@@ -62,16 +87,17 @@ void NewFileScanNode::set_scan_ranges(const std::vector<TScanRangeParams>& scan_
         _scan_ranges.shrink_to_fit();
         LOG(INFO) << "Merge " << scan_ranges.size() << " scan ranges to " << _scan_ranges.size();
     }
-    if (scan_ranges.size() > 0) {
-        _input_tuple_id =
-                scan_ranges[0].scan_range.ext_scan_range.file_scan_range.params.src_tuple_id;
+    if (scan_ranges.size() > 0 &&
+        scan_ranges[0].scan_range.ext_scan_range.file_scan_range.__isset.params) {
+        // for compatibility.
+        // in new implement, the tuple id is set in prepare phase
         _output_tuple_id =
                 scan_ranges[0].scan_range.ext_scan_range.file_scan_range.params.dest_tuple_id;
     }
 }
 
 Status NewFileScanNode::_init_profile() {
-    VScanNode::_init_profile();
+    RETURN_IF_ERROR(VScanNode::_init_profile());
     return Status::OK();
 }
 
@@ -84,53 +110,30 @@ Status NewFileScanNode::_process_conjuncts() {
     return Status::OK();
 }
 
-Status NewFileScanNode::_init_scanners(std::list<VScanner*>* scanners) {
+Status NewFileScanNode::_init_scanners(std::list<VScannerSPtr>* scanners) {
     if (_scan_ranges.empty()) {
         _eos = true;
         return Status::OK();
     }
 
+    // TODO: determine kv cache shard num
+    size_t shard_num =
+            std::min<size_t>(config::doris_scanner_thread_pool_thread_num, _scan_ranges.size());
+    _kv_cache.reset(new ShardedKVCache(shard_num));
     for (auto& scan_range : _scan_ranges) {
-        VScanner* scanner =
-                (VScanner*)_create_scanner(scan_range.scan_range.ext_scan_range.file_scan_range);
-        scanners->push_back(scanner);
+        std::unique_ptr<VFileScanner> scanner =
+                VFileScanner::create_unique(_state, this, _limit_per_scanner,
+                                            scan_range.scan_range.ext_scan_range.file_scan_range,
+                                            runtime_profile(), _kv_cache.get());
+        RETURN_IF_ERROR(
+                scanner->prepare(_conjuncts, &_colname_to_value_range, &_colname_to_slot_id));
+        scanners->push_back(std::move(scanner));
     }
-
     return Status::OK();
 }
 
-VScanner* NewFileScanNode::_create_scanner(const TFileScanRange& scan_range) {
-    VScanner* scanner = nullptr;
-    if (config::enable_new_file_scanner) {
-        scanner = new VFileScanner(_state, this, _limit_per_scanner, scan_range,
-                                   _scanner_mem_tracker.get(), runtime_profile(),
-                                   _pre_filter_texprs, scan_range.params.format_type);
-        ((VFileScanner*)scanner)->prepare(_vconjunct_ctx_ptr.get());
-    } else {
-        switch (scan_range.params.format_type) {
-        case TFileFormatType::FORMAT_PARQUET:
-            scanner = new NewFileParquetScanner(_state, this, _limit_per_scanner, scan_range,
-                                                _scanner_mem_tracker.get(), runtime_profile(),
-                                                _pre_filter_texprs);
-            break;
-        case TFileFormatType::FORMAT_ORC:
-            scanner = new NewFileORCScanner(_state, this, _limit_per_scanner, scan_range,
-                                            _scanner_mem_tracker.get(), runtime_profile(),
-                                            _pre_filter_texprs);
-            break;
-
-        default:
-            scanner = new NewFileTextScanner(_state, this, _limit_per_scanner, scan_range,
-                                             _scanner_mem_tracker.get(), runtime_profile(),
-                                             _pre_filter_texprs);
-            break;
-        }
-        ((NewFileScanner*)scanner)->prepare(_vconjunct_ctx_ptr.get());
-    }
-    _scanner_pool.add(scanner);
-    // TODO: Can we remove _conjunct_ctxs and use _vconjunct_ctx_ptr instead?
-    scanner->reg_conjunct_ctxs(_conjunct_ctxs);
-    return scanner;
+std::string NewFileScanNode::get_name() {
+    return fmt::format("VFILE_SCAN_NODE({0})", _table_name);
 }
 
 }; // namespace doris::vectorized

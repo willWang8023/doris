@@ -15,14 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
-
 #include <cstddef>
+#include <iomanip>
 #include <string>
-#include <type_traits>
+#include <utility>
+#include <vector>
 
+#include "common/status.h"
 #include "function_test_util.h"
+#include "gtest/gtest_pred_impl.h"
+#include "testutil/any_type.h"
 #include "vec/core/field.h"
+#include "vec/core/types.h"
+#include "vec/data_types/data_type_nullable.h"
 #include "vec/data_types/data_type_number.h"
 
 namespace doris {
@@ -66,7 +71,7 @@ void check_function(const std::string& func_name, const IntDataSet data_set,
             converted_data_set.emplace_back(std::make_pair<CellSet, Expect>({array}, Null()));
         }
     }
-    check_function<ReturnType, true>(func_name, input_types, converted_data_set);
+    static_cast<void>(check_function<ReturnType, true>(func_name, input_types, converted_data_set));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayMin) {
@@ -75,13 +80,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayMin) {
             {{}, nullptr},
             {{1, 2, 3}, 1},
     };
-    check_function<DataTypeInt8>(func_name, data_set);
-    check_function<DataTypeInt16>(func_name, data_set);
-    check_function<DataTypeInt32>(func_name, data_set);
-    check_function<DataTypeInt64>(func_name, data_set);
-    check_function<DataTypeInt128>(func_name, data_set);
-    check_function<DataTypeFloat32>(func_name, data_set);
-    check_function<DataTypeFloat64>(func_name, data_set);
+    static_cast<void>(check_function<DataTypeInt8>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt16>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt32>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt128>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat32>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat64>(func_name, data_set));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayMinNullable) {
@@ -91,13 +96,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayMinNullable) {
             {{nullptr}, nullptr},
             {{1, nullptr, 3}, 1},
     };
-    check_function<DataTypeInt8>(func_name, data_set, true);
-    check_function<DataTypeInt16>(func_name, data_set, true);
-    check_function<DataTypeInt32>(func_name, data_set, true);
-    check_function<DataTypeInt64>(func_name, data_set, true);
-    check_function<DataTypeInt128>(func_name, data_set, true);
-    check_function<DataTypeFloat32>(func_name, data_set, true);
-    check_function<DataTypeFloat64>(func_name, data_set, true);
+    static_cast<void>(check_function<DataTypeInt8>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt16>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt32>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt128>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat32>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat64>(func_name, data_set, true));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayMax) {
@@ -106,13 +111,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayMax) {
             {{}, nullptr},
             {{1, 2, 3}, 3},
     };
-    check_function<DataTypeInt8>(func_name, data_set);
-    check_function<DataTypeInt16>(func_name, data_set);
-    check_function<DataTypeInt32>(func_name, data_set);
-    check_function<DataTypeInt64>(func_name, data_set);
-    check_function<DataTypeInt128>(func_name, data_set);
-    check_function<DataTypeFloat32>(func_name, data_set);
-    check_function<DataTypeFloat64>(func_name, data_set);
+    static_cast<void>(check_function<DataTypeInt8>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt16>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt32>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt128>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat32>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat64>(func_name, data_set));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayMaxNullable) {
@@ -122,13 +127,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayMaxNullable) {
             {{nullptr}, nullptr},
             {{1, nullptr, 3}, 3},
     };
-    check_function<DataTypeInt8>(func_name, data_set, true);
-    check_function<DataTypeInt16>(func_name, data_set, true);
-    check_function<DataTypeInt32>(func_name, data_set, true);
-    check_function<DataTypeInt64>(func_name, data_set, true);
-    check_function<DataTypeInt128>(func_name, data_set, true);
-    check_function<DataTypeFloat32>(func_name, data_set, true);
-    check_function<DataTypeFloat64>(func_name, data_set, true);
+    static_cast<void>(check_function<DataTypeInt8>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt16>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt32>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt128>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat32>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat64>(func_name, data_set, true));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArraySum) {
@@ -137,13 +142,13 @@ TEST(VFunctionArrayAggregationTest, TestArraySum) {
             {{}, nullptr},
             {{1, 2, 3}, 6},
     };
-    check_function<DataTypeInt8, DataTypeInt64>(func_name, data_set);
-    check_function<DataTypeInt16, DataTypeInt64>(func_name, data_set);
-    check_function<DataTypeInt32, DataTypeInt64>(func_name, data_set);
-    check_function<DataTypeInt64, DataTypeInt64>(func_name, data_set);
-    check_function<DataTypeInt128, DataTypeInt128>(func_name, data_set);
-    check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set);
+    static_cast<void>(check_function<DataTypeInt8, DataTypeInt64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt16, DataTypeInt64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt32, DataTypeInt64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt64, DataTypeInt64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt128, DataTypeInt128>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArraySumNullable) {
@@ -153,13 +158,13 @@ TEST(VFunctionArrayAggregationTest, TestArraySumNullable) {
             {{nullptr}, nullptr},
             {{1, nullptr, 3}, 4},
     };
-    check_function<DataTypeInt8, DataTypeInt64>(func_name, data_set, true);
-    check_function<DataTypeInt16, DataTypeInt64>(func_name, data_set, true);
-    check_function<DataTypeInt32, DataTypeInt64>(func_name, data_set, true);
-    check_function<DataTypeInt64, DataTypeInt64>(func_name, data_set, true);
-    check_function<DataTypeInt128, DataTypeInt128>(func_name, data_set, true);
-    check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set, true);
+    static_cast<void>(check_function<DataTypeInt8, DataTypeInt64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt16, DataTypeInt64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt32, DataTypeInt64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt64, DataTypeInt64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt128, DataTypeInt128>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set, true));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayAverage) {
@@ -168,13 +173,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayAverage) {
             {{}, nullptr},
             {{1, 2, 3}, 2},
     };
-    check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set);
+    static_cast<void>(check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayAverageNullable) {
@@ -184,13 +189,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayAverageNullable) {
             {{nullptr}, nullptr},
             {{1, nullptr, 3}, 2},
     };
-    check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set, true);
+    static_cast<void>(check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set, true));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayProduct) {
@@ -199,13 +204,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayProduct) {
             {{}, nullptr},
             {{1, 2, 3}, 6},
     };
-    check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set);
-    check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set);
+    static_cast<void>(check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set));
+    static_cast<void>(check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set));
 }
 
 TEST(VFunctionArrayAggregationTest, TestArrayProductNullable) {
@@ -215,13 +220,13 @@ TEST(VFunctionArrayAggregationTest, TestArrayProductNullable) {
             {{nullptr}, nullptr},
             {{1, nullptr, 3}, 3},
     };
-    check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set, true);
-    check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set, true);
+    static_cast<void>(check_function<DataTypeInt8, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt16, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt32, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt64, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeInt128, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat32, DataTypeFloat64>(func_name, data_set, true));
+    static_cast<void>(check_function<DataTypeFloat64, DataTypeFloat64>(func_name, data_set, true));
 }
 
 } // namespace vectorized

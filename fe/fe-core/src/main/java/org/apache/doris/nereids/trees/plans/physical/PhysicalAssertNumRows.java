@@ -27,6 +27,7 @@ import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
 import org.apache.doris.nereids.util.Utils;
+import org.apache.doris.statistics.Statistics;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -39,6 +40,7 @@ import java.util.Optional;
  * Physical assertNumRows.
  */
 public class PhysicalAssertNumRows<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_TYPE> {
+
     private final AssertNumRowsElement assertNumRowsElement;
 
     public PhysicalAssertNumRows(AssertNumRowsElement assertNumRowsElement,
@@ -48,8 +50,10 @@ public class PhysicalAssertNumRows<CHILD_TYPE extends Plan> extends PhysicalUnar
     }
 
     public PhysicalAssertNumRows(AssertNumRowsElement assertNumRowsElement, Optional<GroupExpression> groupExpression,
-            LogicalProperties logicalProperties, PhysicalProperties physicalProperties, CHILD_TYPE child) {
-        super(PlanType.PHYSICAL_ASSERT_NUM_ROWS, groupExpression, logicalProperties, physicalProperties, child);
+            LogicalProperties logicalProperties, PhysicalProperties physicalProperties,
+            Statistics statistics, CHILD_TYPE child) {
+        super(PlanType.PHYSICAL_ASSERT_NUM_ROWS, groupExpression, logicalProperties, physicalProperties,
+                statistics, child);
         this.assertNumRowsElement = assertNumRowsElement;
     }
 
@@ -66,7 +70,7 @@ public class PhysicalAssertNumRows<CHILD_TYPE extends Plan> extends PhysicalUnar
 
     @Override
     public String toString() {
-        return Utils.toSqlString("PhysicalAssertNumRows",
+        return Utils.toSqlString("PhysicalAssertNumRows" + getGroupIdWithPrefix(),
                 "assertNumRowsElement", assertNumRowsElement);
     }
 
@@ -101,24 +105,34 @@ public class PhysicalAssertNumRows<CHILD_TYPE extends Plan> extends PhysicalUnar
     @Override
     public PhysicalAssertNumRows<Plan> withChildren(List<Plan> children) {
         Preconditions.checkArgument(children.size() == 1);
-        return new PhysicalAssertNumRows<>(assertNumRowsElement, getLogicalProperties(), children.get(0));
+        return new PhysicalAssertNumRows<>(assertNumRowsElement, groupExpression,
+                getLogicalProperties(), physicalProperties, statistics, children.get(0));
     }
 
     @Override
     public PhysicalAssertNumRows<CHILD_TYPE> withGroupExpression(Optional<GroupExpression> groupExpression) {
         return new PhysicalAssertNumRows<>(assertNumRowsElement, groupExpression,
-                getLogicalProperties(), physicalProperties, child());
+                getLogicalProperties(), physicalProperties, statistics, child());
     }
 
     @Override
-    public PhysicalAssertNumRows<CHILD_TYPE> withLogicalProperties(Optional<LogicalProperties> logicalProperties) {
-        return new PhysicalAssertNumRows<>(assertNumRowsElement, Optional.empty(),
-                logicalProperties.get(), getPhysicalProperties(), child());
+    public Plan withGroupExprLogicalPropChildren(Optional<GroupExpression> groupExpression,
+            Optional<LogicalProperties> logicalProperties, List<Plan> children) {
+        Preconditions.checkArgument(children.size() == 1);
+        return new PhysicalAssertNumRows<>(assertNumRowsElement, groupExpression,
+                logicalProperties.get(), physicalProperties, statistics, children.get(0));
     }
 
     @Override
-    public PhysicalAssertNumRows<CHILD_TYPE> withPhysicalProperties(PhysicalProperties physicalProperties) {
-        return new PhysicalAssertNumRows<>(assertNumRowsElement, Optional.empty(),
-                getLogicalProperties(), physicalProperties, child());
+    public PhysicalAssertNumRows<CHILD_TYPE> withPhysicalPropertiesAndStats(PhysicalProperties physicalProperties,
+            Statistics statistics) {
+        return new PhysicalAssertNumRows<>(assertNumRowsElement, groupExpression,
+                getLogicalProperties(), physicalProperties, statistics, child());
+    }
+
+    @Override
+    public PhysicalAssertNumRows<CHILD_TYPE> resetLogicalProperties() {
+        return new PhysicalAssertNumRows<>(assertNumRowsElement, groupExpression,
+                null, physicalProperties, statistics, child());
     }
 }

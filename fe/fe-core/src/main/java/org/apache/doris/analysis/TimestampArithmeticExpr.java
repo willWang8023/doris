@@ -19,6 +19,7 @@ package org.apache.doris.analysis;
 
 import org.apache.doris.analysis.ArithmeticExpr.Operator;
 import org.apache.doris.catalog.Function;
+import org.apache.doris.catalog.Function.NullableMode;
 import org.apache.doris.catalog.PrimitiveType;
 import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.Type;
@@ -31,7 +32,7 @@ import org.apache.doris.thrift.TExprNodeType;
 import org.apache.doris.thrift.TExprOpcode;
 
 import com.google.common.base.Preconditions;
-import org.apache.commons.lang3.StringUtils;
+import com.google.common.collect.Lists;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -46,7 +47,7 @@ import java.util.Map;
  */
 public class TimestampArithmeticExpr extends Expr {
     private static final Logger LOG = LogManager.getLogger(TimestampArithmeticExpr.class);
-    private static Map<String, TimeUnit> TIME_UNITS_MAP = new HashMap<String, TimeUnit>();
+    private static final Map<String, TimeUnit> TIME_UNITS_MAP = new HashMap<String, TimeUnit>();
 
     static {
         for (TimeUnit timeUnit : TimeUnit.values()) {
@@ -97,40 +98,24 @@ public class TimestampArithmeticExpr extends Expr {
      * @param timeUnitIdent interval time unit, could be 'year', 'month', 'day', 'hour', 'minute', 'second'.
      * @param dataType the return data type of this expression.
      */
-    public TimestampArithmeticExpr(String funcName, Expr e1, Expr e2, String timeUnitIdent, Type dataType) {
+    public TimestampArithmeticExpr(String funcName, ArithmeticExpr.Operator op,
+            Expr e1, Expr e2, String timeUnitIdent, Type dataType, NullableMode nullableMode) {
         this.funcName = funcName;
         this.timeUnitIdent = timeUnitIdent;
         this.timeUnit = TIME_UNITS_MAP.get(timeUnitIdent.toUpperCase(Locale.ROOT));
+        this.op = op;
         this.intervalFirst = false;
         children.add(e1);
         children.add(e2);
         this.type = dataType;
-    }
+        fn = new Function(new FunctionName(funcName.toLowerCase(Locale.ROOT)),
+                Lists.newArrayList(e1.getType(), e2.getType()), dataType, false, true, nullableMode);
+        try {
+            opcode = getOpCode();
+        } catch (AnalysisException e) {
+            throw new RuntimeException(e);
+        }
 
-    /**
-     * used for Nereids ONLY.
-     * C'tor for non-function-call like arithmetic, e.g., 'a + interval b year'.
-     * e1 always refers to the timestamp to be added/subtracted from, and e2
-     * to the time value (even in the interval-first case).
-     *
-     * @param op operator of this function either ADD or SUBTRACT.
-     * @param e1 non interval literal child of this function
-     * @param e2 interval literal child of this function
-     * @param timeUnitIdent interval time unit, could be 'year', 'month', 'day', 'hour', 'minute', 'second'.
-     * @param intervalFirst true if the left child is interval literal
-     * @param dataType the return data type of this expression.
-     */
-    public TimestampArithmeticExpr(ArithmeticExpr.Operator op, Expr e1, Expr e2,
-            String timeUnitIdent, boolean intervalFirst, Type dataType) {
-        Preconditions.checkState(op == Operator.ADD || op == Operator.SUBTRACT);
-        this.funcName = null;
-        this.op = op;
-        this.timeUnitIdent = timeUnitIdent;
-        this.timeUnit = TIME_UNITS_MAP.get(timeUnitIdent.toUpperCase(Locale.ROOT));
-        this.intervalFirst = intervalFirst;
-        children.add(e1);
-        children.add(e2);
-        this.type = dataType;
     }
 
     protected TimestampArithmeticExpr(TimestampArithmeticExpr other) {
@@ -147,11 +132,6 @@ public class TimestampArithmeticExpr extends Expr {
         return new TimestampArithmeticExpr(this);
     }
 
-    @Override
-    public boolean isVectorized() {
-        return false;
-    }
-
     private Type fixType() {
         PrimitiveType t1 = getChild(0).getType().getPrimitiveType();
         if (t1 == PrimitiveType.DATETIME) {
@@ -166,11 +146,16 @@ public class TimestampArithmeticExpr extends Expr {
         if (t1 == PrimitiveType.DATEV2) {
             return Type.DATEV2;
         }
-        if (Config.enable_date_conversion
-                && PrimitiveType.isImplicitCast(t1, PrimitiveType.DATETIMEV2)) {
-            return Type.DATETIMEV2;
-        }
         if (PrimitiveType.isImplicitCast(t1, PrimitiveType.DATETIME)) {
+            if (Config.enable_date_conversion) {
+                if (t1 == PrimitiveType.NULL_TYPE) {
+                    getChild(0).type = Type.DATETIMEV2_WITH_MAX_SCALAR;
+                }
+                return Type.DATETIMEV2_WITH_MAX_SCALAR;
+            }
+            if (t1 == PrimitiveType.NULL_TYPE) {
+                getChild(0).type = Type.DATETIME;
+            }
             return Type.DATETIME;
         }
         return Type.INVALID;
@@ -256,7 +241,8 @@ public class TimestampArithmeticExpr extends Expr {
             }
 
             if (!getChild(1).getType().isScalarType()) {
-                throw new AnalysisException("must be a scalar type.");
+                throw new AnalysisException(
+                        "the second argument must be a scalar type. but it is " + getChild(1).toSql());
             }
 
             // The second child must be of type 'INT' or castable to it.
@@ -275,8 +261,22 @@ public class TimestampArithmeticExpr extends Expr {
                     (op == ArithmeticExpr.Operator.ADD) ? "ADD" : "SUB");
         }
 
-        fn = getBuiltinFunction(funcOpName.toLowerCase(), collectChildReturnTypes(),
+        Type[] childrenTypes = collectChildReturnTypes();
+        fn = getBuiltinFunction(funcOpName.toLowerCase(), childrenTypes,
                 Function.CompareMode.IS_NONSTRICT_SUPERTYPE_OF);
+        Preconditions.checkArgument(fn != null);
+        Type[] argTypes = fn.getArgs();
+        if (argTypes.length > 0) {
+            // Implicitly cast all the children to match the function if necessary
+            for (int i = 0; i < childrenTypes.length; ++i) {
+                // For varargs, we must compare with the last type in callArgs.argTypes.
+                int ix = Math.min(argTypes.length - 1, i);
+                if (!childrenTypes[i].matchesType(argTypes[ix]) && !(
+                        childrenTypes[i].isDateOrDateTime() && argTypes[ix].isDateOrDateTime())) {
+                    uncheckedCastChild(argTypes[ix], i);
+                }
+            }
+        }
         LOG.debug("fn is {} name is {}", fn, funcOpName);
     }
 
@@ -464,16 +464,5 @@ public class TimestampArithmeticExpr extends Expr {
         public String toString() {
             return description;
         }
-    }
-
-    @Override
-    public void finalizeImplForNereids() throws AnalysisException {
-        if (StringUtils.isEmpty(funcName)) {
-            throw new AnalysisException("function name is null");
-        }
-        timeUnit = TIME_UNITS_MAP.get(timeUnitIdent.toUpperCase());
-        opcode = getOpCode();
-        fn = getBuiltinFunction(funcName.toLowerCase(), collectChildReturnTypes(),
-                Function.CompareMode.IS_NONSTRICT_SUPERTYPE_OF);
     }
 }

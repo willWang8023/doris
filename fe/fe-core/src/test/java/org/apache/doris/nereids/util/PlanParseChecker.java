@@ -35,14 +35,14 @@ public class PlanParseChecker extends ParseChecker {
     }
 
     public PlanParseChecker matches(PatternDescriptor<? extends Plan> patternDesc) {
-        assertMatches(() -> GroupMatchingUtils.topDownFindMatching(
-                new Memo(parsedSupplier.get()).getRoot(), patternDesc.pattern));
+        assertMatches(() -> MatchingUtils.topDownFindMatching(
+                new Memo(null, parsedSupplier.get()).getRoot(), patternDesc.pattern));
         return this;
     }
 
     public PlanParseChecker matchesFromRoot(PatternDescriptor<? extends Plan> patternDesc) {
         assertMatches(() -> new GroupExpressionMatching(patternDesc.pattern,
-                new Memo(parsedSupplier.get()).getRoot().getLogicalExpression())
+                new Memo(null, parsedSupplier.get()).getRoot().getLogicalExpression())
                 .iterator().hasNext());
         return this;
     }

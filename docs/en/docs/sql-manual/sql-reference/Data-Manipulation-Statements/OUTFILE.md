@@ -27,75 +27,158 @@ under the License.
 ## OUTFILE
 ### Name
 
-OURFILE
+OUTFILE
 
 ### description
 
-This statement is used to export query results to a file using the `SELECT INTO OUTFILE` command. Currently, it supports exporting to remote storage, such as HDFS, S3, BOS, COS (Tencent Cloud), through the Broker process, through the S3 protocol, or directly through the HDFS protocol.
+This statement is used to export query results to a file using the `SELECT INTO OUTFILE` command. Currently, it supports exporting to remote storage, such as HDFS, S3, BOS, COS (Tencent Cloud), through the Broker process, S3 protocol, or HDFS protocol.
     
-grammar:
+#### grammar:
 
-````
+```sql
 query_stmt
 INTO OUTFILE "file_path"
 [format_as]
 [properties]
-````
+```
 
-illustrate:
+#### illustrate:
 
 1. file_path
 
     file_path points to the path where the file is stored and the file prefix. Such as `hdfs://path/to/my_file_`.
 
-   The final filename will consist of `my_file_`, the file number and the file format suffix. The file serial number starts from 0, and the number is the number of files to be divided. Such as:
+    ```
+    The final filename will consist of `my_file_`, the file number and the file format suffix. The file serial number starts from 0, and the number is the number of files to be divided. Such as:
 
     my_file_abcdefg_0.csv
     my_file_abcdefg_1.csv
     my_file_abcdegf_2.csv
+    ```
+    You can also omit the file prefix and specify only the file directory, such as: `hdfs://path/to/`
 
 2. format_as
 
+    ```
     FORMAT AS CSV
+    ```
 
-    Specifies the export format. Default is CSV.
+    Specifies the export format. Supported formats include CSV, PARQUET, CSV_WITH_NAMES, CSV_WITH_NAMES_AND_TYPES and ORC. Default is CSV.
+    > Note: PARQUET, CSV_WITH_NAMES, CSV_WITH_NAMES_AND_TYPES, and ORC are supported starting in version 1.2 .
 
 3. properties
 
-    Specify related properties. Currently exporting via the Broker process, or via the S3 protocol is supported.
+    Specify related properties. Currently exporting via the Broker process, S3 protocol, or HDFS protocol is supported.
 
-       grammar:
-       [PROPERTIES ("key"="value", ...)]
-       The following properties are supported:
-       column_separator: column separator
-       line_delimiter: line delimiter
-       max_file_size: the size limit of a single file, if the result exceeds this value, it will be cut into multiple files.
-    
-       Broker related properties need to be prefixed with `broker.`:
-       broker.name: broker name
-       broker.hadoop.security.authentication: specify the authentication method as kerberos
-       broker.kerberos_principal: specifies the principal of kerberos
-       broker.kerberos_keytab: specifies the path to the keytab file of kerberos. The file must be the absolute path to the file on the server where the broker process is located. and can be accessed by the Broker process
-    
-       HDFS related properties:
-       fs.defaultFS: namenode address and port
-       hadoop.username: hdfs username
-       dfs.nameservices: if hadoop enable HA, please set fs nameservice. See hdfs-site.xml
-       dfs.ha.namenodes.[nameservice ID]：unique identifiers for each NameNode in the nameservice. See hdfs-site.xml
-       dfs.namenode.rpc-address.[nameservice ID].[name node ID]`：the fully-qualified RPC address for each NameNode to listen on. See hdfs-site.xml
-       dfs.client.failover.proxy.provider.[nameservice ID]：the Java class that HDFS clients use to contact the Active NameNode, usually it is org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider
+    ```
+    grammar:
+    [PROPERTIES ("key"="value", ...)]
+    The following properties are supported:
 
-       For a kerberos-authentication enabled Hadoop cluster, additional properties need to be set:
-       dfs.namenode.kerberos.principal: HDFS namenode service principal
-       hadoop.security.authentication: kerberos
-       hadoop.kerberos.principal: the Kerberos pincipal that Doris will use when connectiong to HDFS.
-       hadoop.kerberos.keytab: HDFS client keytab location.
+    File related properties
+        column_separator: column separator,is only for CSV format. mulit-bytes is supported starting in version 1.2, such as: "\\x01", "abc".
+        line_delimiter: line delimiter,is only for CSV format. mulit-bytes supported starting in version 1.2, such as: "\\x01", "abc".
+        max_file_size: the size limit of a single file, if the result exceeds this value, it will be cut into multiple files, the value range of max_file_size is [5MB, 2GB] and the default is 1GB. (When specified that the file format is ORC, the size of the actual division file will be a multiples of 64MB, such as: specify max_file_size = 5MB, and actually use 64MB as the division; specify max_file_size = 65MB, and will actually use 128MB as cut division points.)
+        delete_existing_files: default `false`. If it is specified as true, you will first delete all files specified in the directory specified by the file_path, and then export the data to the directory.For example: "file_path" = "/user/tmp", then delete all files and directory under "/user/"; "file_path" = "/user/tmp/", then delete all files and directory under "/user/tmp/" 
+        file_suffix: Specify the suffix of the export file. If this parameter is not specified, the default suffix for the file format will be used.
     
-       For the S3 protocol, you can directly execute the S3 protocol configuration:
-       AWS_ENDPOINT
-       AWS_ACCESS_KEY
-       AWS_SECRET_KEY
-       AWS_REGION
+    Broker related properties need to be prefixed with `broker.`:
+        broker.name: broker name
+        broker.hadoop.security.authentication: specify the authentication method as kerberos
+        broker.kerberos_principal: specifies the principal of kerberos
+        broker.kerberos_keytab: specifies the path to the keytab file of kerberos. The file must be the absolute path to the file on the server where the broker process is located. and can be accessed by the Broker process
+    
+    HDFS related properties:
+        fs.defaultFS: namenode address and port
+        hadoop.username: hdfs username
+        dfs.nameservices: if hadoop enable HA, please set fs nameservice. See hdfs-site.xml
+        dfs.ha.namenodes.[nameservice ID]：unique identifiers for each NameNode in the nameservice. See hdfs-site.xml
+        dfs.namenode.rpc-address.[nameservice ID].[name node ID]: the fully-qualified RPC address for each NameNode to listen on. See hdfs-site.xml
+        dfs.client.failover.proxy.provider.[nameservice ID]：the Java class that HDFS clients use to contact the Active NameNode, usually it is org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider
+
+        For a kerberos-authentication enabled Hadoop cluster, additional properties need to be set:
+        dfs.namenode.kerberos.principal: HDFS namenode service principal
+        hadoop.security.authentication: kerberos
+        hadoop.kerberos.principal: the Kerberos pincipal that Doris will use when connectiong to HDFS.
+        hadoop.kerberos.keytab: HDFS client keytab location.
+    
+    For the S3 protocol, you can directly execute the S3 protocol configuration:
+    s3.endpoint
+    s3.access_key
+    s3.secret_key
+    s3.region
+    use_path_style: (optional) default false . The S3 SDK uses the virtual-hosted style by default. However, some object storage systems may not be enabled or support virtual-hosted style access. At this time, we can add the use_path_style parameter to force the use of path style access method.
+    ```
+
+    > Note that to use the `delete_existing_files` parameter, you also need to add the configuration `enable_delete_existing_files = true` to the fe.conf file and restart the FE. Only then will the `delete_existing_files` parameter take effect. Setting `delete_existing_files = true` is a dangerous operation and it is recommended to only use it in a testing environment.
+
+4. Data Types for Export
+
+    All file formats support the export of basic data types, while only csv/orc/csv_with_names/csv_with_names_and_types currently support the export of complex data types (ARRAY/MAP/STRUCT). Nested complex data types are not supported.
+
+5. Concurrent Export
+
+    Setting the session variable `set enable_parallel_outfile = true;` enables concurrent export using outfile. For detailed usage, see [Export Query Result](../../../data-operate/export/outfile.md).
+
+6. Export to Local
+
+    To export to a local file, you need configure `enable_outfile_to_local=true` in fe.conf.
+
+    ```sql
+    select * from tbl1 limit 10 
+    INTO OUTFILE "file:///home/work/path/result_";
+    ```
+
+#### DataType Mapping
+
+Parquet and ORC file formats have their own data types. The export function of Doris can automatically export the Doris data types to the corresponding data types of the Parquet/ORC file format. The following are the data type mapping relationship of the Doris data types and the Parquet/ORC file format data types:
+
+1. The mapping relationship between the Doris data types to the ORC data types is: 
+
+    | Doris Type | Orc Type |
+    | --- | --- |
+    | boolean | boolean  |
+    | tinyint | tinyint |
+    | smallint | smallint |
+    | int | int |
+    | bigint | bigint |
+    | largeInt | string |
+    | date | string |
+    | datev2 | string |
+    | datetime | string |
+    | datetimev2 | timestamp |
+    | float | float |
+    | double | double |
+    | char / varchar / string | string |
+    | decimal | decimal |
+    | struct | struct |
+    | map | map  |
+    | array | array |
+
+2. When Doris exports data to the Parquet file format, the Doris memory data will be converted to Arrow memory data format first, and then the paraquet file format is written by Arrow. The mapping relationship between the Doris data types to the ARROW data types is: 
+
+    | Doris Type | Arrow Type |
+    | --- | --- |
+    | boolean  | boolean |
+    | tinyint  | int8 |
+    | smallint  | int16 |
+    | int  | int32 |
+    | bigint  | int64 |
+    | largeInt | utf8 |
+    | date | utf8 |
+    | datev2 | utf8 |
+    | datetime | utf8 |
+    | datetimev2 | utf8 |
+    | float  | float32 |
+    | double | float64 |
+    | char / varchar / string | utf8 |
+    | decimal | decimal128 |
+    | struct | struct |
+    | map | map |
+    | array | list |
+
+
+
 
 ### example
 
@@ -131,12 +214,9 @@ illustrate:
        "broker.name" = "my_broker",
        "broker.hadoop.security.authentication" = "kerberos",
        "broker.kerberos_principal" = "doris@YOUR.COM",
-       "broker.kerberos_keytab" = "/home/doris/my.keytab",
-       "schema"="required,int32,c1;required,byte_array,c2;required,byte_array,c2"
+       "broker.kerberos_keytab" = "/home/doris/my.keytab"
    );
    ````
-
-   Exporting query results to parquet files requires explicit `schema`.
 
 3. Export the query result of the CTE statement to the file `hdfs://path/to/result.txt`. The default export format is CSV. Use `my_broker` and set hdfs high availability information. Use the default row and column separators.
 
@@ -176,12 +256,11 @@ illustrate:
        "broker.name" = "my_broker",
        "broker.bos_endpoint" = "http://bj.bcebos.com",
        "broker.bos_accesskey" = "xxxxxxxxxxxxxxxxxxxxxxxxxxx",
-       "broker.bos_secret_accesskey" = "yyyyyyyyyyyyyyyyyyyyyyyyy",
-       "schema"="required,int32,k1;required,byte_array,k2"
+       "broker.bos_secret_accesskey" = "yyyyyyyyyyyyyyyyyyyyyyyyy"
    );
    ````
 
-5. Export the query result of the select statement to the file `cos://${bucket_name}/path/result.txt`. Specify the export format as csv.
+5. Export the query result of the select statement to the file `s3a://${bucket_name}/path/result.txt`. Specify the export format as csv.
    After the export is complete, an identity file is generated.
 
    ```sql
@@ -206,7 +285,7 @@ illustrate:
    Verify on cos
 
           1. A path that does not exist will be automatically created
-             2. Access.key/secret.key/endpoint needs to be confirmed with cos students. Especially the value of endpoint does not need to fill in bucket_name.
+          2. Access.key/secret.key/endpoint needs to be confirmed with students of cos. Especially the value of endpoint does not need to fill in bucket_name.
 
 6. Use the s3 protocol to export to bos, and enable concurrent export.
 
@@ -217,10 +296,10 @@ illustrate:
    format as csv
    properties
    (
-       "AWS_ENDPOINT" = "http://s3.bd.bcebos.com",
-       "AWS_ACCESS_KEY" = "xxxx",
-       "AWS_SECRET_KEY" = "xxx",
-       "AWS_REGION" = "bd"
+        "s3.endpoint" = "http://s3.bd.bcebos.com",
+        "s3.access_key" = "xxxx",
+        "s3.secret_key" = "xxx",
+        "s3.region" = "bd"
    )
    ````
 
@@ -236,18 +315,19 @@ illustrate:
    format as csv
    properties
    (
-       "AWS_ENDPOINT" = "http://s3.bd.bcebos.com",
-       "AWS_ACCESS_KEY" = "xxxx",
-       "AWS_SECRET_KEY" = "xxx",
-       "AWS_REGION" = "bd"
+        "s3.endpoint" = "http://s3.bd.bcebos.com",
+        "s3.access_key" = "xxxx",
+        "s3.secret_key" = "xxx",
+        "s3.region" = "bd"
    )
    ````
 
-8. Use hdfs export to export simple query results to the file `hdfs://path/to/result.txt`. Specify the export format as CSV and the user name as work. Specify the column separator as `,` and the row separator as `\n`.
+8. Use hdfs export to export simple query results to the file `hdfs://${host}:${fileSystem_port}/path/to/result.txt`. Specify the export format as CSV and the user name as work. Specify the column separator as `,` and the row separator as `\n`.
 
    ```sql
+   -- the default port of fileSystem_port is 9000
    SELECT * FROM tbl
-   INTO OUTFILE "hdfs://path/to/result_"
+   INTO OUTFILE "hdfs://${host}:${fileSystem_port}/path/to/result_"
    FORMAT AS CSV
    PROPERTIES
    (
@@ -279,6 +359,26 @@ illustrate:
    If the final generated file is not larger than 100MB, it will be: `result_0.csv`.
    If larger than 100MB, it may be `result_0.csv, result_1.csv, ...`.
 
+9. Export the query result of the select statement to the file `cosn://${bucket_name}/path/result.txt` on Tencent Cloud Object Storage (COS). Specify the export format as csv.
+   After the export is complete, an identity file is generated.
+
+   ```sql
+   select k1,k2,v1 from tbl1 limit 100000
+   into outfile "cosn://my_bucket/export/my_file_"
+   FORMAT AS CSV
+   PROPERTIES
+   (
+       "broker.name" = "broker_name",
+       "broker.fs.cosn.userinfo.secretId" = "xxx",
+       "broker.fs.cosn.userinfo.secretKey" = "xxxx",
+       "broker.fs.cosn.bucket.endpoint_suffix" = "cos.xxxxxx.myqcloud.com",
+       "column_separator" = ",",
+       "line_delimiter" = "\n",
+       "max_file_size" = "1024MB",
+       "success_file_name" = "SUCCESS"
+   )
+   ````
+
 ### keywords
 
 OUTFILE
@@ -302,3 +402,7 @@ OUTFILE
 4. Results Integrity Guarantee
 
    This command is a synchronous command, so it is possible that the task connection is disconnected during the execution process, so that it is impossible to live the exported data whether it ends normally, or whether it is complete. At this point, you can use the `success_file_name` parameter to request that a successful file identifier be generated in the directory after the task is successful. Users can use this file to determine whether the export ends normally.
+
+5. Other Points to Note
+
+    See [Export Query Result](../../../data-operate/export/outfile.md)

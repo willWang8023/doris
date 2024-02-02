@@ -18,10 +18,19 @@
 // https://github.com/ClickHouse/ClickHouse/blob/master/src/Core/ColumnWithTypeAndName.cpp
 // and modified by Doris
 
-#include <ostream>
-#include <sstream>
+#include "vec/core/column_with_type_and_name.h"
 
-#include "vec/core/columns_with_type_and_name.h"
+#include <gen_cpp/data.pb.h>
+#include <stddef.h>
+
+#include <memory>
+#include <sstream>
+#include <string>
+
+#include "vec/columns/column.h"
+#include "vec/core/types.h"
+#include "vec/data_types/data_type.h"
+#include "vec/data_types/data_type_nullable.h"
 
 namespace doris::vectorized {
 
@@ -47,10 +56,14 @@ bool ColumnWithTypeAndName::operator==(const ColumnWithTypeAndName& other) const
 }
 
 void ColumnWithTypeAndName::dump_structure(std::ostream& out) const {
-    out << name;
+    if (name.empty()) {
+        out << "[Anonymous Column]";
+    } else {
+        out << name;
+    }
 
     if (type)
-        out << " ";
+        out << " " << type->get_name();
     else
         out << " nullptr";
 
@@ -73,6 +86,30 @@ std::string ColumnWithTypeAndName::to_string(size_t row_num) const {
 void ColumnWithTypeAndName::to_pb_column_meta(PColumnMeta* col_meta) const {
     col_meta->set_name(name);
     type->to_pb_column_meta(col_meta);
+}
+
+ColumnWithTypeAndName ColumnWithTypeAndName::get_nested(bool replace_null_data_to_default) const {
+    if (type->is_nullable()) {
+        auto nested_type = assert_cast<const DataTypeNullable*>(type.get())->get_nested_type();
+        ColumnPtr nested_column = column;
+        if (column) {
+            nested_column = nested_column->convert_to_full_column_if_const();
+            const auto* source_column = assert_cast<const ColumnNullable*>(nested_column.get());
+            nested_column = source_column->get_nested_column_ptr();
+
+            if (replace_null_data_to_default) {
+                const auto& null_map = source_column->get_null_map_data();
+                // only need to mutate nested column, avoid to copy nullmap
+                auto mutable_nested_col = (*std::move(nested_column)).mutate();
+                mutable_nested_col->replace_column_null_data(null_map.data());
+
+                return {std::move(mutable_nested_col), nested_type, ""};
+            }
+        }
+        return {nested_column, nested_type, ""};
+    } else {
+        return {column, type, ""};
+    }
 }
 
 } // namespace doris::vectorized

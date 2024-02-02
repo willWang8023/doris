@@ -21,6 +21,7 @@ import org.apache.doris.analysis.DescriptorTable;
 import org.apache.doris.analysis.SlotDescriptor;
 import org.apache.doris.analysis.TupleDescriptor;
 import org.apache.doris.catalog.Column;
+import org.apache.doris.catalog.DataProperty;
 import org.apache.doris.catalog.HashDistributionInfo;
 import org.apache.doris.catalog.ListPartitionInfo;
 import org.apache.doris.catalog.MaterializedIndex;
@@ -91,6 +92,8 @@ public class OlapTableSinkTest {
 
         new Expectations() {
             {
+                dstTable.getIndexNumber();
+                result = 1;
                 dstTable.getId();
                 result = 1;
                 dstTable.getPartitionInfo();
@@ -102,9 +105,12 @@ public class OlapTableSinkTest {
             }
         };
 
+        dstTable.getPartitionInfo().setDataProperty(partition.getId(),
+                new DataProperty(DataProperty.DEFAULT_STORAGE_MEDIUM));
+        dstTable.getPartitionInfo().setIsMutable(partition.getId(), true);
         OlapTableSink sink = new OlapTableSink(dstTable, tuple, Lists.newArrayList(2L), false);
-        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false);
-        sink.complete();
+        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false, false, 5);
+        sink.complete(null);
         LOG.info("sink is {}", sink.toThrift());
         LOG.info("{}", sink.getExplainString("", TExplainLevel.NORMAL));
     }
@@ -124,6 +130,8 @@ public class OlapTableSinkTest {
 
         new Expectations() {
             {
+                dstTable.getIndexNumber();
+                result = 1;
                 dstTable.getId();
                 result = 1;
                 dstTable.getPartitionInfo();
@@ -140,9 +148,9 @@ public class OlapTableSinkTest {
         };
 
         OlapTableSink sink = new OlapTableSink(dstTable, tuple, Lists.newArrayList(p1.getId()), false);
-        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false);
+        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false, false, 5);
         try {
-            sink.complete();
+            sink.complete(null);
         } catch (UserException e) {
             // CHECKSTYLE IGNORE THIS LINE
         }
@@ -165,8 +173,8 @@ public class OlapTableSinkTest {
         };
 
         OlapTableSink sink = new OlapTableSink(dstTable, tuple, Lists.newArrayList(unknownPartId), false);
-        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false);
-        sink.complete();
+        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false, false, 5);
+        sink.complete(null);
         LOG.info("sink is {}", sink.toThrift());
         LOG.info("{}", sink.getExplainString("", TExplainLevel.NORMAL));
     }
@@ -186,6 +194,8 @@ public class OlapTableSinkTest {
 
         new Expectations() {
             {
+                dstTable.getIndexNumber();
+                result = 1;
                 dstTable.getId();
                 result = 1;
                 dstTable.getPartitionInfo();
@@ -202,9 +212,9 @@ public class OlapTableSinkTest {
         };
 
         OlapTableSink sink = new OlapTableSink(dstTable, tuple, Lists.newArrayList(p1.getId()), false);
-        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false);
+        sink.init(new TUniqueId(1, 2), 3, 4, 1000, 1, false, false, 5);
         try {
-            sink.complete();
+            sink.complete(null);
         } catch (UserException e) {
             // CHECKSTYLE IGNORE THIS LINE
         }

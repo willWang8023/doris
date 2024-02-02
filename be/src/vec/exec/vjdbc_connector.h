@@ -16,14 +16,34 @@
 // under the License.
 
 #pragma once
-#ifdef LIBJVM
 
+#include <fmt/format.h>
+#include <gen_cpp/Types_types.h>
+#include <jni.h>
+#include <stdint.h>
+
+#include <map>
+#include <string>
+#include <vector>
+
+#include "common/status.h"
 #include "exec/table_connector.h"
-#include "jni.h"
+#include "vec/aggregate_functions/aggregate_function.h"
+#include "vec/data_types/data_type.h"
 
 namespace doris {
+class RuntimeState;
+class SlotDescriptor;
+class TupleDescriptor;
+
 namespace vectorized {
+
+class Block;
+class IColumn;
+class VExprContext;
+
 struct JdbcConnectorParam {
+    int64_t catalog_id;
     std::string driver_path;
     std::string driver_class;
     std::string resource_name;
@@ -32,73 +52,121 @@ struct JdbcConnectorParam {
     std::string user;
     std::string passwd;
     std::string query_string;
+    std::string table_name;
+    bool use_transaction;
+    TOdbcTableType::type table_type;
+    int32_t connection_pool_min_size;
+    int32_t connection_pool_max_size;
+    int32_t connection_pool_max_wait_time;
+    int32_t connection_pool_max_life_time;
+    bool connection_pool_keep_alive;
 
-    const TupleDescriptor* tuple_desc;
+    const TupleDescriptor* tuple_desc = nullptr;
 };
 
 class JdbcConnector : public TableConnector {
 public:
+    struct JdbcStatistic {
+        int64_t _load_jar_timer = 0;
+        int64_t _init_connector_timer = 0;
+        int64_t _get_data_timer = 0;
+        int64_t _get_block_address_timer = 0;
+        int64_t _fill_block_timer = 0;
+        int64_t _check_type_timer = 0;
+        int64_t _execte_read_timer = 0;
+        int64_t _connector_close_timer = 0;
+    };
+
     JdbcConnector(const JdbcConnectorParam& param);
 
     ~JdbcConnector() override;
 
-    Status open() override;
+    Status open(RuntimeState* state, bool read = false);
 
     Status query() override;
 
-    Status exec_write_sql(const std::u16string& insert_stmt,
-                          const fmt::memory_buffer& insert_stmt_buffer) override;
+    Status get_next(bool* eos, Block* block, int batch_size);
 
-    Status get_next(bool* eos, std::vector<MutableColumnPtr>& columns, int batch_size);
+    Status append(vectorized::Block* block, const vectorized::VExprContextSPtrs& _output_vexpr_ctxs,
+                  uint32_t start_send_row, uint32_t* num_rows_sent,
+                  TOdbcTableType::type table_type = TOdbcTableType::MYSQL) override;
+
+    Status exec_write_sql(const std::u16string& insert_stmt,
+                          const fmt::memory_buffer& insert_stmt_buffer) override {
+        return Status::OK();
+    }
+
+    Status exec_stmt_write(Block* block, const VExprContextSPtrs& output_vexpr_ctxs,
+                           uint32_t* num_rows_sent) override;
 
     // use in JDBC transaction
     Status begin_trans() override; // should be call after connect and before query or init_to_write
     Status abort_trans() override; // should be call after transaction abort
     Status finish_trans() override; // should be call after transaction commit
 
+    Status init_to_write(doris::RuntimeProfile* profile) override {
+        init_profile(profile);
+        return Status::OK();
+    }
+
+    JdbcStatistic& get_jdbc_statistic() { return _jdbc_statistic; }
+
+    Status close(Status s = Status::OK()) override;
+
+protected:
+    JdbcConnectorParam _conn_param;
+
 private:
     Status _register_func_id(JNIEnv* env);
-    Status _convert_column_data(JNIEnv* env, jobject jobj, const SlotDescriptor* slot_desc,
-                                vectorized::IColumn* column_ptr);
+    Status _check_column_type();
+    Status _check_type(SlotDescriptor*, const std::string& type_str, int column_index);
     std::string _jobject_to_string(JNIEnv* env, jobject jobj);
-    int64_t _jobject_to_date(JNIEnv* env, jobject jobj);
-    int64_t _jobject_to_datetime(JNIEnv* env, jobject jobj);
 
-    const JdbcConnectorParam& _conn_param;
+    jobject _get_reader_params(Block* block, JNIEnv* env, size_t column_size);
+
+    Status _cast_string_to_special(Block* block, JNIEnv* env, size_t column_size);
+    Status _cast_string_to_hll(const SlotDescriptor* slot_desc, Block* block, int column_index,
+                               int rows);
+    Status _cast_string_to_bitmap(const SlotDescriptor* slot_desc, Block* block, int column_index,
+                                  int rows);
+    Status _cast_string_to_json(const SlotDescriptor* slot_desc, Block* block, int column_index,
+                                int rows);
+
+    bool _closed = false;
     jclass _executor_clazz;
     jclass _executor_list_clazz;
     jclass _executor_object_clazz;
     jclass _executor_string_clazz;
     jobject _executor_obj;
     jmethodID _executor_ctor_id;
-    jmethodID _executor_query_id;
+    jmethodID _executor_stmt_write_id;
+    jmethodID _executor_read_id;
     jmethodID _executor_has_next_id;
-    jmethodID _executor_get_blocks_id;
+    jmethodID _executor_get_block_address_id;
+    jmethodID _executor_block_rows_id;
+    jmethodID _executor_get_types_id;
     jmethodID _executor_close_id;
     jmethodID _executor_get_list_id;
-    jmethodID _executor_get_list_size_id;
-    jmethodID _executor_convert_date_id;
-    jmethodID _executor_convert_datetime_id;
     jmethodID _get_bytes_id;
     jmethodID _to_string_id;
     jmethodID _executor_begin_trans_id;
     jmethodID _executor_finish_trans_id;
     jmethodID _executor_abort_trans_id;
 
-#define FUNC_VARI_DECLARE(RETURN_TYPE)                                \
-    RETURN_TYPE _jobject_to_##RETURN_TYPE(JNIEnv* env, jobject jobj); \
-    jclass _executor_##RETURN_TYPE##_clazz;
+    std::map<int, int> _map_column_idx_to_cast_idx_hll;
+    std::vector<DataTypePtr> _input_hll_string_types;
+    std::vector<MutableColumnPtr> str_hll_cols; // for hll type to save data like string
 
-    FUNC_VARI_DECLARE(uint8_t)
-    FUNC_VARI_DECLARE(int8_t)
-    FUNC_VARI_DECLARE(int16_t)
-    FUNC_VARI_DECLARE(int32_t)
-    FUNC_VARI_DECLARE(int64_t)
-    FUNC_VARI_DECLARE(float)
-    FUNC_VARI_DECLARE(double)
+    std::map<int, int> _map_column_idx_to_cast_idx_bitmap;
+    std::vector<DataTypePtr> _input_bitmap_string_types;
+    std::vector<MutableColumnPtr> str_bitmap_cols; // for bitmap type to save data like string
+
+    std::map<int, int> _map_column_idx_to_cast_idx_json;
+    std::vector<DataTypePtr> _input_json_string_types;
+    std::vector<MutableColumnPtr> str_json_cols; // for json type to save data like string
+
+    JdbcStatistic _jdbc_statistic;
 };
 
 } // namespace vectorized
 } // namespace doris
-
-#endif

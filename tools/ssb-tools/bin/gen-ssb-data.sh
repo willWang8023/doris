@@ -29,8 +29,8 @@ ROOT=$(
 )
 
 CURDIR=${ROOT}
-SSB_DBGEN_DIR=${CURDIR}/ssb-dbgen/
-SSB_DATA_DIR=${CURDIR}/ssb-data/
+SSB_DBGEN_DIR=${CURDIR}/ssb-dbgen
+SSB_DATA_DIR=${CURDIR}/ssb-data
 
 usage() {
     echo "
@@ -88,9 +88,8 @@ while true; do
     esac
 done
 
-if [[ ${HELP} -eq 1 ]]; then
+if [[ "${HELP}" -eq 1 ]]; then
     usage
-    exit
 fi
 
 echo "Scale Factor: ${SCALE_FACTOR}"

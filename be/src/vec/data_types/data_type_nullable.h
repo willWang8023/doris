@@ -20,7 +20,31 @@
 
 #pragma once
 
+#include <gen_cpp/Types_types.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <memory>
+#include <string>
+
+#include "common/status.h"
+#include "runtime/define_primitive_type.h"
+#include "runtime/types.h"
+#include "vec/core/field.h"
+#include "vec/core/types.h"
 #include "vec/data_types/data_type.h"
+#include "vec/data_types/serde/data_type_nullable_serde.h"
+#include "vec/data_types/serde/data_type_serde.h"
+
+namespace doris {
+class PColumnMeta;
+
+namespace vectorized {
+class BufferWritable;
+class IColumn;
+class ReadBuffer;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 
@@ -36,10 +60,18 @@ public:
     const char* get_family_name() const override { return "Nullable"; }
     TypeIndex get_type_id() const override { return TypeIndex::Nullable; }
 
+    TypeDescriptor get_type_as_type_descriptor() const override {
+        return TypeDescriptor(nested_data_type->get_type_as_type_descriptor());
+    }
+
+    doris::FieldType get_storage_field_type() const override {
+        return nested_data_type->get_storage_field_type();
+    }
+
     int64_t get_uncompressed_serialized_bytes(const IColumn& column,
-                                              int data_version) const override;
-    char* serialize(const IColumn& column, char* buf, int data_version) const override;
-    const char* deserialize(const char* buf, IColumn* column, int data_version) const override;
+                                              int be_exec_version) const override;
+    char* serialize(const IColumn& column, char* buf, int be_exec_version) const override;
+    const char* deserialize(const char* buf, IColumn* column, int be_exec_version) const override;
 
     void to_pb_column_meta(PColumnMeta* col_meta) const override;
 
@@ -47,13 +79,21 @@ public:
 
     Field get_default() const override;
 
+    Field get_field(const TExprNode& node) const override {
+        if (node.node_type == TExprNodeType::NULL_LITERAL) {
+            return Null();
+        }
+        return nested_data_type->get_field(node);
+    }
+
     bool equals(const IDataType& rhs) const override;
+
+    bool is_value_unambiguously_represented_in_contiguous_memory_region() const override {
+        return nested_data_type->is_value_unambiguously_represented_in_contiguous_memory_region();
+    }
 
     bool get_is_parametric() const override { return true; }
     bool have_subtypes() const override { return true; }
-    bool cannot_be_stored_in_tables() const override {
-        return nested_data_type->cannot_be_stored_in_tables();
-    }
     bool should_align_right_in_pretty_formats() const override {
         return nested_data_type->should_align_right_in_pretty_formats();
     }
@@ -61,14 +101,6 @@ public:
         return nested_data_type->text_can_contain_only_valid_utf8();
     }
     bool is_comparable() const override { return nested_data_type->is_comparable(); }
-    bool can_be_compared_with_collation() const override {
-        return nested_data_type->can_be_compared_with_collation();
-    }
-    bool can_be_used_as_version() const override { return false; }
-    bool is_summable() const override { return nested_data_type->is_summable(); }
-    bool can_be_used_in_boolean_context() const override {
-        return nested_data_type->can_be_used_in_boolean_context();
-    }
     bool have_maximum_size_of_value() const override {
         return nested_data_type->have_maximum_size_of_value();
     }
@@ -77,7 +109,6 @@ public:
     }
     bool is_nullable() const override { return true; }
     size_t get_size_of_value_in_memory() const override;
-    bool only_null() const override;
     bool can_be_inside_low_cardinality() const override {
         return nested_data_type->can_be_inside_low_cardinality();
     }
@@ -86,12 +117,21 @@ public:
     Status from_string(ReadBuffer& rb, IColumn* column) const override;
 
     const DataTypePtr& get_nested_type() const { return nested_data_type; }
+    bool is_null_literal() const override { return nested_data_type->is_null_literal(); }
+
+    DataTypeSerDeSPtr get_serde(int nesting_level = 1) const override {
+        return std::make_shared<DataTypeNullableSerDe>(nested_data_type->get_serde(nesting_level),
+                                                       nesting_level);
+    }
 
 private:
     DataTypePtr nested_data_type;
 };
 
 DataTypePtr make_nullable(const DataTypePtr& type);
+DataTypes make_nullable(const DataTypes& types);
 DataTypePtr remove_nullable(const DataTypePtr& type);
+DataTypes remove_nullable(const DataTypes& types);
+bool have_nullable(const DataTypes& types);
 
 } // namespace doris::vectorized

@@ -23,20 +23,28 @@ import org.apache.doris.nereids.jobs.JobContext;
 import org.apache.doris.nereids.jobs.JobType;
 import org.apache.doris.nereids.memo.CopyInResult;
 import org.apache.doris.nereids.memo.GroupExpression;
+import org.apache.doris.nereids.metrics.EventChannel;
+import org.apache.doris.nereids.metrics.EventProducer;
+import org.apache.doris.nereids.metrics.consumer.LogConsumer;
+import org.apache.doris.nereids.metrics.event.TransformEvent;
+import org.apache.doris.nereids.minidump.NereidsTracer;
 import org.apache.doris.nereids.pattern.GroupExpressionMatching;
 import org.apache.doris.nereids.rules.Rule;
+import org.apache.doris.nereids.rules.RuleType;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
 
+import java.util.HashMap;
 import java.util.List;
 
 /**
  * Job to apply rule on {@link GroupExpression}.
  */
 public class ApplyRuleJob extends Job {
+    private static final EventProducer APPLY_RULE_TRACER = new EventProducer(TransformEvent.class,
+            EventChannel.getDefaultChannel().addConsumers(new LogConsumer(TransformEvent.class, EventChannel.LOG)));
     private final GroupExpression groupExpression;
     private final Rule rule;
-    private final boolean exploredOnly;
 
     /**
      * Constructor of ApplyRuleJob.
@@ -49,40 +57,59 @@ public class ApplyRuleJob extends Job {
         super(JobType.APPLY_RULE, context);
         this.groupExpression = groupExpression;
         this.rule = rule;
-        this.exploredOnly = false;
+        super.cteIdToStats = new HashMap<>();
     }
 
     @Override
-    public void execute() throws AnalysisException {
-        if (groupExpression.hasApplied(rule)) {
+    public final void execute() throws AnalysisException {
+        if (groupExpression.hasApplied(rule)
+                || groupExpression.isUnused()) {
             return;
         }
+        countJobExecutionTimesOfGroupExpressions(groupExpression);
 
         GroupExpressionMatching groupExpressionMatching
                 = new GroupExpressionMatching(rule.getPattern(), groupExpression);
         for (Plan plan : groupExpressionMatching) {
-            context.onInvokeRule(rule.getRuleType());
             List<Plan> newPlans = rule.transform(plan, context.getCascadesContext());
             for (Plan newPlan : newPlans) {
+                if (newPlan == plan) {
+                    continue;
+                }
                 CopyInResult result = context.getCascadesContext()
                         .getMemo()
                         .copyIn(newPlan, groupExpression.getOwnerGroup(), false);
                 if (!result.generateNewExpression) {
                     continue;
                 }
-
                 GroupExpression newGroupExpression = result.correspondingExpression;
+                newGroupExpression.setFromRule(rule);
                 if (newPlan instanceof LogicalPlan) {
-                    if (exploredOnly) {
-                        pushJob(new ExploreGroupExpressionJob(newGroupExpression, context));
-                        pushJob(new DeriveStatsJob(newGroupExpression, context));
-                        continue;
-                    }
                     pushJob(new OptimizeGroupExpressionJob(newGroupExpression, context));
-                    pushJob(new DeriveStatsJob(newGroupExpression, context));
+                    if (!rule.getRuleType().equals(RuleType.LOGICAL_JOIN_COMMUTE)) {
+                        pushJob(new DeriveStatsJob(newGroupExpression, context));
+                    } else {
+                        // The Join Commute rule preserves the operator's expression and children,
+                        // thereby not altering the statistics. Hence, there is no need to derive statistics for it.
+                        newGroupExpression.setStatDerived(true);
+                    }
                 } else {
                     pushJob(new CostAndEnforcerJob(newGroupExpression, context));
+                    if (newGroupExpression.children().stream().anyMatch(g -> g.getLogicalExpressions().isEmpty())) {
+                        // If a rule creates a new group when generating a physical plan,
+                        // then we need to derive statistics for it, e.g., logicalTopToPhysicalTopN rule:
+                        // logicalTopN ==> GlobalPhysicalTopN
+                        //                   -> localPhysicalTopN
+                        // These implementation rules integrate rules for plan shape transformation.
+                        pushJob(new DeriveStatsJob(newGroupExpression, context));
+                    } else {
+                        newGroupExpression.setStatDerived(true);
+                    }
                 }
+
+                NereidsTracer.logApplyRuleEvent(rule.toString(), plan, newGroupExpression.getPlan());
+                APPLY_RULE_TRACER.log(TransformEvent.of(groupExpression, plan, newPlans, rule.getRuleType()),
+                        rule::isRewrite);
             }
         }
         groupExpression.setApplied(rule);

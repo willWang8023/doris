@@ -17,12 +17,23 @@
 
 suite("one_row_relation") {
     // enable nereids and vectorized engine
-    sql "SET enable_vectorized_engine=true"
     sql "SET enable_nereids_planner=true"
     sql "SET enable_fallback_to_original_planner=false"
 
     test {
-        sql "select 100, 'abc', substring('abc', 1, 2), substring(substring('abcdefg', 4, 3), 1, 2)"
-        result([[100, "abc", "ab", "de"]])
+        sql "select 100, 'abc', substring('abc', 1, 2), substring(substring('abcdefg', 4, 3), 1, 2), null"
+        result([[100, "abc", "ab", "de", null]])
     }
+
+    test {
+        sql """select * from (
+            select 100, 'abc', substring('abc', 1, 2), substring(substring('abcdefg', 4, 3), 1, 2), null
+        )a"""
+        result([[100, "abc", "ab", "de", null]])
+    }
+
+    qt_string1 """ select 'A''B', 'A''''B', 'A\\'\\'B', ''; """
+    qt_string2 """ select "A""B", "A\\"\\"B", "";  """
+    qt_string3 """ select 'A""B', 'A\\"\\"B';  """
+    qt_string4 """ select "A''B", "A\\'\\'B";  """
 }

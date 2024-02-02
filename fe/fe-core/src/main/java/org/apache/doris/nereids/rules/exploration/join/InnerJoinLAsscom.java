@@ -20,15 +20,29 @@ package org.apache.doris.nereids.rules.exploration.join;
 import org.apache.doris.nereids.rules.Rule;
 import org.apache.doris.nereids.rules.RuleType;
 import org.apache.doris.nereids.rules.exploration.OneExplorationRuleFactory;
+import org.apache.doris.nereids.trees.expressions.ExprId;
+import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.plans.GroupPlan;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalJoin;
+import org.apache.doris.nereids.util.Utils;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Rule for change inner join LAsscom (associative and commutive).
  */
 public class InnerJoinLAsscom extends OneExplorationRuleFactory {
-    public static final InnerJoinLAsscom INSTANCE = new InnerJoinLAsscom();
+    public static final InnerJoinLAsscom INSTANCE = new InnerJoinLAsscom(false);
+    public static final InnerJoinLAsscom LEFT_ZIG_ZAG = new InnerJoinLAsscom(true);
+    private boolean leftZigZag = false;
+
+    public InnerJoinLAsscom(boolean leftZigZag) {
+        this.leftZigZag = leftZigZag;
+    }
 
     /*
      *      topJoin                newTopJoin
@@ -40,19 +54,83 @@ public class InnerJoinLAsscom extends OneExplorationRuleFactory {
     @Override
     public Rule build() {
         return innerLogicalJoin(innerLogicalJoin(), group())
-                .when(topJoin -> check(topJoin, topJoin.left()))
+                .when(topJoin -> checkReorder(topJoin, topJoin.left(), leftZigZag))
+                .whenNot(join -> join.hasDistributeHint() || join.left().hasDistributeHint())
+                .whenNot(join -> join.isMarkJoin() || join.left().isMarkJoin())
                 .then(topJoin -> {
-                    JoinLAsscomHelper helper = new JoinLAsscomHelper(topJoin, topJoin.left());
-                    if (!helper.initJoinOnCondition()) {
+                    LogicalJoin<GroupPlan, GroupPlan> bottomJoin = topJoin.left();
+                    GroupPlan a = bottomJoin.left();
+                    GroupPlan b = bottomJoin.right();
+                    GroupPlan c = topJoin.right();
+
+                    // split HashJoinConjuncts.
+                    Map<Boolean, List<Expression>> splitHashConjuncts = splitConjuncts(topJoin.getHashJoinConjuncts(),
+                            bottomJoin, bottomJoin.getHashJoinConjuncts());
+                    List<Expression> newTopHashConjuncts = splitHashConjuncts.get(true);
+                    List<Expression> newBottomHashConjuncts = splitHashConjuncts.get(false);
+
+                    // split OtherJoinConjuncts.
+                    Map<Boolean, List<Expression>> splitOtherConjunts = splitConjuncts(topJoin.getOtherJoinConjuncts(),
+                            bottomJoin, bottomJoin.getOtherJoinConjuncts());
+                    List<Expression> newTopOtherConjuncts = splitOtherConjunts.get(true);
+                    List<Expression> newBottomOtherConjuncts = splitOtherConjunts.get(false);
+
+                    if (newBottomHashConjuncts.isEmpty() && newBottomOtherConjuncts.isEmpty()) {
                         return null;
                     }
-                    return helper.newTopJoin();
+
+                    LogicalJoin<Plan, Plan> newBottomJoin = topJoin.withConjunctsChildren(newBottomHashConjuncts,
+                            newBottomOtherConjuncts, a, c);
+
+                    LogicalJoin<Plan, Plan> newTopJoin = bottomJoin.withConjunctsChildren(newTopHashConjuncts,
+                            newTopOtherConjuncts, newBottomJoin, b);
+                    newTopJoin.getJoinReorderContext().copyFrom(topJoin.getJoinReorderContext());
+                    newTopJoin.getJoinReorderContext().setHasLAsscom(true);
+
+                    return newTopJoin;
                 }).toRule(RuleType.LOGICAL_INNER_JOIN_LASSCOM);
     }
 
-    public static boolean check(LogicalJoin<? extends Plan, GroupPlan> topJoin,
-            LogicalJoin<GroupPlan, GroupPlan> bottomJoin) {
-        return !bottomJoin.getJoinReorderContext().hasCommuteZigZag()
-                && !topJoin.getJoinReorderContext().hasLAsscom();
+    /**
+     * trigger rule condition
+     */
+    public static boolean checkReorder(LogicalJoin<? extends Plan, GroupPlan> topJoin,
+            LogicalJoin<GroupPlan, GroupPlan> bottomJoin, boolean leftZigZag) {
+        if (leftZigZag) {
+            double bRows = bottomJoin.right().getGroup().getStatistics().getRowCount();
+            double cRows = topJoin.right().getGroup().getStatistics().getRowCount();
+            return bRows < cRows && !bottomJoin.getJoinReorderContext().hasCommuteZigZag()
+                    && !topJoin.getJoinReorderContext().hasLAsscom()
+                    && (!bottomJoin.isMarkJoin() && !topJoin.isMarkJoin());
+        } else {
+            return !bottomJoin.getJoinReorderContext().hasCommuteZigZag()
+                    && !topJoin.getJoinReorderContext().hasLAsscom()
+                    && (!bottomJoin.isMarkJoin() && !topJoin.isMarkJoin());
+        }
+    }
+
+    /**
+     * Split onCondition into two part.
+     * True: contains B.
+     * False: just contains A C.
+     */
+    private static Map<Boolean, List<Expression>> splitConjuncts(List<Expression> topConjuncts,
+            LogicalJoin<GroupPlan, GroupPlan> bottomJoin, List<Expression> bottomConjuncts) {
+        // top: (A B)(error) (A C) (B C) (A B C)
+        // Split topJoin hashCondition to two part according to include B.
+        Map<Boolean, List<Expression>> splitOn = topConjuncts.stream()
+                .collect(Collectors.partitioningBy(topHashOn -> {
+                    Set<ExprId> usedExprIdSet = topHashOn.getInputSlotExprIds();
+                    Set<ExprId> bOutputExprIdSet = bottomJoin.right().getOutputExprIdSet();
+                    return Utils.isIntersecting(bOutputExprIdSet, usedExprIdSet);
+                }));
+        // * don't include B, just include (A C)
+        // we add it into newBottomJoin HashJoinConjuncts.
+        // * include B, include (A B C) or (A B)
+        // we add it into newTopJoin HashJoinConjuncts.
+        List<Expression> newTopHashJoinConjuncts = splitOn.get(true);
+        newTopHashJoinConjuncts.addAll(bottomConjuncts);
+
+        return splitOn;
     }
 }

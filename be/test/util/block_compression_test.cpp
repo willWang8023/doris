@@ -17,10 +17,14 @@
 
 #include "util/block_compression.h"
 
-#include <gtest/gtest.h>
+#include <gen_cpp/segment_v2.pb.h>
+#include <gtest/gtest-message.h>
+#include <gtest/gtest-test-part.h>
+#include <stdlib.h>
 
-#include <iostream>
+#include <string>
 
+#include "gtest/gtest_pred_impl.h"
 #include "util/faststring.h"
 
 namespace doris {
@@ -94,6 +98,7 @@ TEST_F(BlockCompressionTest, single) {
     test_single_slice(segment_v2::CompressionTypePB::ZLIB);
     test_single_slice(segment_v2::CompressionTypePB::LZ4);
     test_single_slice(segment_v2::CompressionTypePB::LZ4F);
+    test_single_slice(segment_v2::CompressionTypePB::LZ4HC);
     test_single_slice(segment_v2::CompressionTypePB::ZSTD);
 }
 
@@ -139,6 +144,7 @@ TEST_F(BlockCompressionTest, multi) {
     test_multi_slices(segment_v2::CompressionTypePB::ZLIB);
     test_multi_slices(segment_v2::CompressionTypePB::LZ4);
     test_multi_slices(segment_v2::CompressionTypePB::LZ4F);
+    test_multi_slices(segment_v2::CompressionTypePB::LZ4HC);
     test_multi_slices(segment_v2::CompressionTypePB::ZSTD);
 }
 

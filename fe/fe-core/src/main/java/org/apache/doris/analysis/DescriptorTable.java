@@ -27,14 +27,12 @@ import org.apache.doris.thrift.TDescriptorTable;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -55,6 +53,8 @@ public class DescriptorTable {
     private final HashMap<SlotId, SlotDescriptor> slotDescs = Maps.newHashMap();
 
     private final HashMap<SlotDescriptor, SlotDescriptor> outToIntermediateSlots = new HashMap<>();
+
+    private TDescriptorTable thriftDescTable = null; // serialized version of this
 
     public DescriptorTable() {
     }
@@ -116,6 +116,10 @@ public class DescriptorTable {
 
     public TupleDescriptor getTupleDesc(TupleId id) {
         return tupleDescs.get(id);
+    }
+
+    public HashMap<SlotId, SlotDescriptor> getSlotDescs() {
+        return slotDescs;
     }
 
     /**
@@ -180,18 +184,22 @@ public class DescriptorTable {
     }
 
     public TDescriptorTable toThrift() {
+        if (thriftDescTable != null) {
+            return thriftDescTable;
+        }
+
         TDescriptorTable result = new TDescriptorTable();
-        HashSet<TableIf> referencedTbls = Sets.newHashSet();
+        Map<Long, TableIf> referencedTbls = Maps.newHashMap();
         for (TupleDescriptor tupleD : tupleDescs.values()) {
             // inline view of a non-constant select has a non-materialized tuple descriptor
             // in the descriptor table just for type checking, which we need to skip
-            if (tupleD.getIsMaterialized()) {
+            if (tupleD.isMaterialized()) {
                 result.addToTupleDescriptors(tupleD.toThrift());
                 // an inline view of a constant select has a materialized tuple
                 // but its table has no id
                 if (tupleD.getTable() != null
                         && tupleD.getTable().getId() >= 0) {
-                    referencedTbls.add(tupleD.getTable());
+                    referencedTbls.put(tupleD.getTable().getId(), tupleD.getTable());
                 }
                 for (SlotDescriptor slotD : tupleD.getMaterializedSlots()) {
                     result.addToSlotDescriptors(slotD.toThrift());
@@ -199,11 +207,14 @@ public class DescriptorTable {
             }
         }
 
-        referencedTbls.addAll(referencedTables);
+        for (TableIf tbl : referencedTables) {
+            referencedTbls.put(tbl.getId(), tbl);
+        }
 
-        for (TableIf tbl : referencedTbls) {
+        for (TableIf tbl : referencedTbls.values()) {
             result.addToTableDescriptors(tbl.toThrift());
         }
+        thriftDescTable = result;
         return result;
     }
 
@@ -211,10 +222,10 @@ public class DescriptorTable {
         StringBuilder out = new StringBuilder();
         out.append("tuples:\n");
         for (TupleDescriptor desc : tupleDescs.values()) {
-            out.append(desc + "\n");
+            out.append(desc).append("\n");
         }
         out.append("\n ");
-        out.append("slotDesc size: " + slotDescs.size() + "\n");
+        out.append("slotDesc size: ").append(slotDescs.size()).append("\n");
         for (SlotDescriptor desc : slotDescs.values()) {
             out.append(desc.debugString());
             out.append("\n");
@@ -227,7 +238,9 @@ public class DescriptorTable {
         StringBuilder out = new StringBuilder();
         out.append("\nTuples:\n");
         for (TupleDescriptor desc : tupleDescs.values()) {
-            out.append(desc.getExplainString() + "\n");
+            if (desc.isMaterialized()) {
+                out.append(desc.getExplainString()).append("\n");
+            }
         }
         return out.toString();
     }

@@ -19,8 +19,8 @@ package org.apache.doris.analysis;
 
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.UserException;
+import org.apache.doris.mysql.privilege.AccessControllerManager;
 import org.apache.doris.mysql.privilege.MockedAuth;
-import org.apache.doris.mysql.privilege.PaloAuth;
 import org.apache.doris.qe.ConnectContext;
 
 import mockit.Mocked;
@@ -31,13 +31,13 @@ import org.junit.Test;
 public class ShowCreateDbStmtTest {
 
     @Mocked
-    private PaloAuth auth;
+    private AccessControllerManager accessManager;
     @Mocked
     private ConnectContext ctx;
 
     @Before
     public void setUp() {
-        MockedAuth.mockedAuth(auth);
+        MockedAuth.mockedAccess(accessManager);
         MockedAuth.mockedConnectContext(ctx, "root", "192.168.1.1");
     }
 
@@ -45,9 +45,9 @@ public class ShowCreateDbStmtTest {
     public void testNormal() throws AnalysisException, UserException {
         ShowCreateDbStmt stmt = new ShowCreateDbStmt("testDb");
         stmt.analyze(AccessTestUtil.fetchAdminAnalyzer(true));
-        Assert.assertEquals("testCluster:testDb", stmt.getDb());
+        Assert.assertEquals("testDb", stmt.getDb());
         Assert.assertEquals(2, stmt.getMetaData().getColumnCount());
-        Assert.assertEquals("SHOW CREATE DATABASE `testCluster:testDb`", stmt.toString());
+        Assert.assertEquals("SHOW CREATE DATABASE `testDb`", stmt.toString());
     }
 
     @Test(expected = AnalysisException.class)

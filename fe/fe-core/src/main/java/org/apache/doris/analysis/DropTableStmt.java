@@ -21,6 +21,7 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
+import org.apache.doris.common.util.InternalDatabaseUtil;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
@@ -33,6 +34,7 @@ public class DropTableStmt extends DdlStmt {
     private final TableName tableName;
     private final boolean isView;
     private boolean forceDrop;
+    private boolean isMaterializedView;
 
     public DropTableStmt(boolean ifExists, TableName tableName, boolean forceDrop) {
         this.ifExists = ifExists;
@@ -68,6 +70,14 @@ public class DropTableStmt extends DdlStmt {
         return this.forceDrop;
     }
 
+    public void setMaterializedView(boolean value) {
+        isMaterializedView = value;
+    }
+
+    public boolean isMaterializedView() {
+        return isMaterializedView;
+    }
+
     @Override
     public void analyze(Analyzer analyzer) throws UserException {
         if (Strings.isNullOrEmpty(tableName.getDb())) {
@@ -76,9 +86,9 @@ public class DropTableStmt extends DdlStmt {
         tableName.analyze(analyzer);
         // disallow external catalog
         Util.prohibitExternalCatalog(tableName.getCtl(), this.getClass().getSimpleName());
-
+        InternalDatabaseUtil.checkDatabase(tableName.getDb(), ConnectContext.get());
         // check access
-        if (!Env.getCurrentEnv().getAuth().checkTblPriv(ConnectContext.get(), tableName.getDb(),
+        if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(ConnectContext.get(), tableName.getDb(),
                                                                 tableName.getTbl(), PrivPredicate.DROP)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR, "DROP");
         }

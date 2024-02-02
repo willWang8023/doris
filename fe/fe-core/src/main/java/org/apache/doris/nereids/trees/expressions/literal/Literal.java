@@ -17,23 +17,40 @@
 
 package org.apache.doris.nereids.trees.expressions.literal;
 
+import org.apache.doris.analysis.BoolLiteral;
 import org.apache.doris.analysis.LiteralExpr;
+import org.apache.doris.catalog.Type;
+import org.apache.doris.common.Config;
+import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.exceptions.UnboundException;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.shape.LeafExpression;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
+import org.apache.doris.nereids.types.CharType;
 import org.apache.doris.nereids.types.DataType;
+import org.apache.doris.nereids.types.DateTimeV2Type;
+import org.apache.doris.nereids.types.DecimalV2Type;
+import org.apache.doris.nereids.types.DecimalV3Type;
+import org.apache.doris.nereids.types.LargeIntType;
+import org.apache.doris.nereids.types.StringType;
+import org.apache.doris.nereids.types.VarcharType;
+import org.apache.doris.nereids.types.coercion.IntegralType;
 
+import com.google.common.collect.ImmutableList;
+
+import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * All data type literal expression in Nereids.
  * TODO: Increase the implementation of sub expression. such as Integer.
  */
-public abstract class Literal extends Expression implements LeafExpression {
+public abstract class Literal extends Expression implements LeafExpression, Comparable<Literal> {
 
-    private final DataType dataType;
+    protected final DataType dataType;
 
     /**
      * Constructor for Literal.
@@ -41,7 +58,8 @@ public abstract class Literal extends Expression implements LeafExpression {
      * @param dataType logical data type in Nereids
      */
     public Literal(DataType dataType) {
-        this.dataType = dataType;
+        super(ImmutableList.of());
+        this.dataType = Objects.requireNonNull(dataType);
     }
 
     /**
@@ -51,15 +69,25 @@ public abstract class Literal extends Expression implements LeafExpression {
         if (value == null) {
             return new NullLiteral();
         } else if (value instanceof Byte) {
-            return new TinyIntLiteral(((Byte) value).byteValue());
+            return new TinyIntLiteral((Byte) value);
         } else if (value instanceof Short) {
-            return new SmallIntLiteral(((Short) value).shortValue());
+            return new SmallIntLiteral((Short) value);
         } else if (value instanceof Integer) {
             return new IntegerLiteral((Integer) value);
         } else if (value instanceof Long) {
-            return new BigIntLiteral(((Long) value).longValue());
+            return new BigIntLiteral((Long) value);
         } else if (value instanceof BigInteger) {
             return new LargeIntLiteral((BigInteger) value);
+        } else if (value instanceof Float) {
+            return new FloatLiteral((Float) value);
+        } else if (value instanceof Double) {
+            return new DoubleLiteral((Double) value);
+        } else if (value instanceof BigDecimal) {
+            if (Config.enable_decimal_conversion) {
+                return new DecimalV3Literal((BigDecimal) value);
+            } else {
+                return new DecimalLiteral((BigDecimal) value);
+            }
         } else if (value instanceof Boolean) {
             return BooleanLiteral.of((Boolean) value);
         } else if (value instanceof String) {
@@ -70,6 +98,30 @@ public abstract class Literal extends Expression implements LeafExpression {
     }
 
     public abstract Object getValue();
+
+    /**
+     * Map literal to double, and keep "<=" order.
+     * for numeric literal (int/long/double/float), directly convert to double
+     * for char/varchar/string, we take first 8 chars as a int64, and convert it to double
+     * for other literals, getDouble() is not used.
+     * <p>
+     * And hence, we could express the range of a datatype, and used in stats derive.
+     * for example:
+     * 'abcxxxxxxxxxxx' is between ('abb', 'zzz')
+     *
+     * @return double representation of literal.
+     */
+    public double getDouble() {
+        try {
+            return Double.parseDouble(getValue().toString());
+        } catch (Exception e) {
+            return 0.0;
+        }
+    }
+
+    public String getStringValue() {
+        return String.valueOf(getValue());
+    }
 
     @Override
     public DataType getDataType() throws UnboundException {
@@ -82,6 +134,14 @@ public abstract class Literal extends Expression implements LeafExpression {
     }
 
     @Override
+    public String getExpressionName() {
+        if (!this.exprName.isPresent()) {
+            this.exprName = Optional.of("literal");
+        }
+        return this.exprName.get();
+    }
+
+    @Override
     public boolean nullable() throws UnboundException {
         return this instanceof NullLiteral;
     }
@@ -89,6 +149,194 @@ public abstract class Literal extends Expression implements LeafExpression {
     @Override
     public <R, C> R accept(ExpressionVisitor<R, C> visitor, C context) {
         return visitor.visitLiteral(this, context);
+    }
+
+    /**
+     * literal expr compare.
+     */
+    @Override
+    public int compareTo(Literal other) {
+        return toLegacyLiteral().compareLiteral(other.toLegacyLiteral());
+    }
+
+    /**
+     * literal expr compare.
+     */
+    @Override
+    public Expression checkedCastTo(DataType targetType) throws AnalysisException {
+        if (getDataType().isNumericType()) {
+            String desc = getStringValue();
+            BigDecimal val = new BigDecimal(desc);
+            BigDecimal maxVal = val;
+            BigDecimal minVal = val;
+            if (targetType.isTinyIntType()) {
+                maxVal = new BigDecimal(Byte.MAX_VALUE);
+                minVal = new BigDecimal(Byte.MIN_VALUE);
+            } else if (targetType.isSmallIntType()) {
+                maxVal = new BigDecimal(Short.MAX_VALUE);
+                minVal = new BigDecimal(Short.MIN_VALUE);
+            } else if (targetType.isIntegerType()) {
+                maxVal = new BigDecimal(Integer.MAX_VALUE);
+                minVal = new BigDecimal(Integer.MIN_VALUE);
+            } else if (targetType.isBigIntType()) {
+                maxVal = new BigDecimal(Long.MAX_VALUE);
+                minVal = new BigDecimal(Long.MIN_VALUE);
+            } else if (targetType.isLargeIntType()) {
+                maxVal = new BigDecimal(LargeIntType.MAX_VALUE);
+                minVal = new BigDecimal(LargeIntType.MIN_VALUE);
+            } else if (targetType.isFloatType()) {
+                maxVal = new BigDecimal(Float.MAX_VALUE);
+                minVal = BigDecimal.valueOf(-Float.MAX_VALUE);
+            } else if (targetType.isDoubleType()) {
+                maxVal = new BigDecimal(Double.MAX_VALUE);
+                minVal = BigDecimal.valueOf(-Double.MAX_VALUE);
+            }
+
+            if (val.compareTo(maxVal) > 0 || val.compareTo(minVal) < 0) {
+                throw new AnalysisException(
+                        String.format("%s can't cast to %s", desc, targetType));
+            }
+        }
+        return uncheckedCastTo(targetType);
+    }
+
+    @Override
+    protected Expression uncheckedCastTo(DataType targetType) throws AnalysisException {
+        if (this.dataType.equals(targetType)) {
+            return this;
+        }
+        if (this instanceof NullLiteral) {
+            return new NullLiteral(targetType);
+        }
+        // TODO support string to complex
+        String desc = getStringValue();
+        // convert boolean to byte string value to support cast boolean to numeric in FE.
+        if (this.equals(BooleanLiteral.TRUE)) {
+            desc = "1";
+        } else if (this.equals(BooleanLiteral.FALSE)) {
+            desc = "0";
+        }
+        if (targetType.isBooleanType()) {
+            try {
+                // convert any non-zero numeric literal to true if target type is boolean
+                long value = Long.parseLong(desc);
+                if (value == 0) {
+                    return Literal.of(false);
+                } else {
+                    return Literal.of(true);
+                }
+            } catch (Exception e) {
+                // ignore
+            }
+            if ("0".equals(desc) || "false".equals(desc.toLowerCase(Locale.ROOT))) {
+                return Literal.of(false);
+            }
+            if ("1".equals(desc) || "true".equals(desc.toLowerCase(Locale.ROOT))) {
+                return Literal.of(true);
+            }
+        }
+        if (targetType instanceof IntegralType) {
+            // do trailing zeros to avoid number parse error when cast to integral type
+            BigDecimal bigDecimal = new BigDecimal(desc);
+            if (bigDecimal.stripTrailingZeros().scale() <= 0) {
+                desc = bigDecimal.stripTrailingZeros().toPlainString();
+            }
+        }
+        if (targetType.isTinyIntType()) {
+            return Literal.of(Byte.valueOf(desc));
+        } else if (targetType.isSmallIntType()) {
+            return Literal.of(Short.valueOf(desc));
+        } else if (targetType.isIntegerType()) {
+            return Literal.of(Integer.valueOf(desc));
+        } else if (targetType.isBigIntType()) {
+            return Literal.of(Long.valueOf(desc));
+        } else if (targetType.isLargeIntType()) {
+            return Literal.of(new BigDecimal(desc).toBigInteger());
+        } else if (targetType.isFloatType()) {
+            return Literal.of(Double.valueOf(desc).floatValue());
+        } else if (targetType.isDoubleType()) {
+            return Literal.of(Double.parseDouble(desc));
+        } else if (targetType.isCharType()) {
+            if (((CharType) targetType).getLen() >= desc.length()) {
+                return new CharLiteral(desc, ((CharType) targetType).getLen());
+            }
+        } else if (targetType.isVarcharType()) {
+            return new VarcharLiteral(desc, ((VarcharType) targetType).getLen());
+        } else if (targetType instanceof StringType) {
+            return new StringLiteral(desc);
+        } else if (targetType.isDateType()) {
+            return new DateLiteral(desc);
+        } else if (targetType.isDateTimeType()) {
+            return new DateTimeLiteral(desc);
+        } else if (targetType.isDecimalV2Type()) {
+            return new DecimalLiteral((DecimalV2Type) targetType, new BigDecimal(desc));
+        } else if (targetType.isDecimalV3Type()) {
+            return new DecimalV3Literal((DecimalV3Type) targetType, new BigDecimal(desc));
+        } else if (targetType.isDateV2Type()) {
+            return new DateV2Literal(desc);
+        } else if (targetType.isDateTimeV2Type()) {
+            return new DateTimeV2Literal((DateTimeV2Type) targetType, desc);
+        } else if (targetType.isJsonType()) {
+            return new JsonLiteral(desc);
+        } else if (targetType.isIPv4Type()) {
+            return new IPv4Literal(desc);
+        } else if (targetType.isIPv6Type()) {
+            return new IPv6Literal(desc);
+        }
+        throw new AnalysisException("cannot cast " + desc + " from type " + this.dataType + " to type " + targetType);
+    }
+
+    /** fromLegacyLiteral */
+    public static Literal fromLegacyLiteral(LiteralExpr literalExpr, Type type) {
+        DataType dataType = DataType.fromCatalogType(type);
+        if (literalExpr instanceof org.apache.doris.analysis.MaxLiteral) {
+            return new MaxLiteral(dataType);
+        }
+        String stringValue = literalExpr.getStringValue();
+        if (dataType.isBooleanType()) {
+            return ((BoolLiteral) literalExpr).getValue() ? BooleanLiteral.TRUE : BooleanLiteral.FALSE;
+        } else if (dataType.isTinyIntType()) {
+            return new TinyIntLiteral(Byte.parseByte(stringValue));
+        } else if (dataType.isSmallIntType()) {
+            return new SmallIntLiteral(Short.parseShort(stringValue));
+        } else if (dataType.isIntegerType()) {
+            return new IntegerLiteral(Integer.parseInt(stringValue));
+        } else if (dataType.isBigIntType()) {
+            return new BigIntLiteral(Long.parseLong(stringValue));
+        } else if (dataType.isLargeIntType()) {
+            return new LargeIntLiteral(new BigInteger(stringValue));
+        } else if (dataType.isStringType()) {
+            return new StringLiteral(stringValue);
+        } else if (dataType.isCharType()) {
+            return new CharLiteral(stringValue, ((CharType) dataType).getLen());
+        } else if (dataType.isVarcharType()) {
+            return new VarcharLiteral(stringValue, ((VarcharType) dataType).getLen());
+        } else if (dataType.isFloatType()) {
+            return new FloatLiteral(Float.parseFloat(stringValue));
+        } else if (dataType.isDoubleType()) {
+            return new DoubleLiteral(Double.parseDouble(stringValue));
+        } else if (dataType.isDecimalV2Type()) {
+            return new DecimalLiteral((DecimalV2Type) dataType, new BigDecimal(stringValue));
+        } else if (dataType.isDecimalV3Type()) {
+            return new DecimalV3Literal((DecimalV3Type) dataType, new BigDecimal(stringValue));
+        } else if (dataType.isDateType()) {
+            return new DateLiteral(stringValue);
+        } else if (dataType.isDateV2Type()) {
+            return new DateV2Literal(stringValue);
+        } else if (dataType.isDateTimeType()) {
+            return new DateTimeLiteral(stringValue);
+        } else if (dataType.isDateTimeV2Type()) {
+            return new DateTimeV2Literal(stringValue);
+        } else if (dataType.isJsonType()) {
+            return new JsonLiteral(stringValue);
+        } else if (dataType.isIPv4Type()) {
+            return new IPv4Literal(stringValue);
+        } else if (dataType.isIPv6Type()) {
+            return new IPv6Literal(stringValue);
+        } else {
+            throw new AnalysisException("Unsupported convert the " + literalExpr.getType()
+                    + " of legacy literal to nereids literal");
+        }
     }
 
     @Override
@@ -114,4 +362,31 @@ public abstract class Literal extends Expression implements LeafExpression {
     }
 
     public abstract LiteralExpr toLegacyLiteral();
+
+    public boolean isStringLikeLiteral() {
+        return dataType.isStringLikeType();
+    }
+
+    /** whether is ZERO value **/
+    public boolean isZero() {
+        if (isNullLiteral()) {
+            return false;
+        }
+        if (dataType.isSmallIntType() || dataType.isTinyIntType() || dataType.isIntegerType()) {
+            return getValue().equals(0);
+        } else if (dataType.isBigIntType()) {
+            return getValue().equals(0L);
+        } else if (dataType.isLargeIntType()) {
+            return getValue().equals(BigInteger.ZERO);
+        } else if (dataType.isFloatType()) {
+            return getValue().equals(0.0f);
+        } else if (dataType.isDoubleType()) {
+            return getValue().equals(0.0);
+        } else if (dataType.isDecimalV2Type()) {
+            return getValue().equals(BigDecimal.ZERO);
+        } else if (dataType.isDecimalV3Type()) {
+            return getValue().equals(BigDecimal.ZERO);
+        }
+        return false;
+    }
 }

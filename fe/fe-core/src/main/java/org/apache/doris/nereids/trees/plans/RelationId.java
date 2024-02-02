@@ -19,31 +19,19 @@ package org.apache.doris.nereids.trees.plans;
 
 import org.apache.doris.common.Id;
 import org.apache.doris.common.IdGenerator;
-
-import java.util.Objects;
+import org.apache.doris.nereids.trees.expressions.StatementScopeIdGenerator;
 
 /**
  * relation id
  */
 public class RelationId extends Id<RelationId> {
+
     public RelationId(int id) {
         super(id);
     }
 
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        RelationId relationId = (RelationId) o;
-        return id == relationId.id;
-    }
-
     /**
-     * Should be only called by {@link org.apache.doris.nereids.trees.expressions.NamedExpressionUtil}.
+     * Should be only called by {@link StatementScopeIdGenerator}.
      */
     public static IdGenerator<RelationId> createGenerator() {
         return new IdGenerator<RelationId>() {
@@ -51,21 +39,21 @@ public class RelationId extends Id<RelationId> {
             public RelationId getNextId() {
                 return new RelationId(nextId++);
             }
-
-            @Override
-            public RelationId getMaxId() {
-                return new RelationId(nextId);
-            }
         };
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(id);
     }
 
     @Override
     public String toString() {
         return "RelationId#" + id;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        return super.equals(obj);
+    }
+
+    @Override
+    public int hashCode() {
+        return super.hashCode();
     }
 }

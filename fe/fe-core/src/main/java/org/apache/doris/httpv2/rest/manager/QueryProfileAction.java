@@ -19,16 +19,21 @@ package org.apache.doris.httpv2.rest.manager;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.AnalysisException;
+import org.apache.doris.common.AuthenticationException;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.Pair;
 import org.apache.doris.common.proc.CurrentQueryStatementsProcNode;
 import org.apache.doris.common.proc.ProcResult;
 import org.apache.doris.common.profile.ProfileTreeNode;
 import org.apache.doris.common.profile.ProfileTreePrinter;
+import org.apache.doris.common.util.NetUtils;
 import org.apache.doris.common.util.ProfileManager;
+import org.apache.doris.common.util.ProfileManager.ProfileElement;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.httpv2.rest.RestBaseController;
+import org.apache.doris.mysql.privilege.Auth;
 import org.apache.doris.mysql.privilege.PrivPredicate;
+import org.apache.doris.nereids.stats.StatsErrorEstimator;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.service.ExecuteEnv;
@@ -59,6 +64,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
@@ -133,7 +139,6 @@ public class QueryProfileAction extends RestBaseController {
                             @RequestParam(value = IS_ALL_NODE_PARA, required = false, defaultValue = "true")
                                     boolean isAllNode) {
         executeCheckPassword(request, response);
-        checkGlobalAuth(ConnectContext.get().getCurrentUserIdentity(), PrivPredicate.ADMIN);
 
         List<List<String>> queries = Lists.newArrayList();
         if (isAllNode) {
@@ -166,15 +171,15 @@ public class QueryProfileAction extends RestBaseController {
             return ResponseEntityBuilder.ok(new NodeAction.NodeInfo(QUERY_TITLE_NAMES, queries));
         }
 
-        queries = ProfileManager.getInstance().getAllQueries().stream()
-                .filter(profile -> profile.get(4).equals("Query")).collect(Collectors.toList());
-        if (!Strings.isNullOrEmpty(queryId)) {
-            queries = queries.stream().filter(q -> q.get(0).equals(queryId)).collect(Collectors.toList());
-        }
+        Stream<List<String>> queryStream = ProfileManager.getInstance().getAllQueries().stream()
+                .filter(profile -> profile.get(1).equalsIgnoreCase("Query"));
+        queryStream = filterQueriesByUserAndQueryId(queryStream, queryId);
+        queries = queryStream.collect(Collectors.toList());
 
         // add node information
         for (List<String> query : queries) {
-            query.add(1, Env.getCurrentEnv().getSelfNode().first + ":" + Config.http_port);
+            query.add(1, NetUtils.getHostPortInAccessibleFormat(Env.getCurrentEnv().getSelfNode().getHost(),
+                    Config.http_port));
         }
 
         if (!Strings.isNullOrEmpty(search)) {
@@ -200,7 +205,6 @@ public class QueryProfileAction extends RestBaseController {
                             @RequestParam(value = IS_ALL_NODE_PARA, required = false, defaultValue = "true")
                                     boolean isAllNode) {
         executeCheckPassword(request, response);
-        checkGlobalAuth(ConnectContext.get().getCurrentUserIdentity(), PrivPredicate.ADMIN);
 
         Map<String, String> querySql = Maps.newHashMap();
         if (isAllNode) {
@@ -219,14 +223,28 @@ public class QueryProfileAction extends RestBaseController {
                 }
             }
         } else {
-            List<List<String>> queries =
-                    ProfileManager.getInstance().getAllQueries().stream().filter(query -> query.get(0).equals(queryId))
-                            .collect(Collectors.toList());
+            Stream<List<String>> queryStream = ProfileManager.getInstance().getAllQueries().stream();
+            queryStream = filterQueriesByUserAndQueryId(queryStream, queryId);
+            List<List<String>> queries = queryStream.collect(Collectors.toList());
             if (!queries.isEmpty()) {
                 querySql.put("sql", queries.get(0).get(3));
             }
         }
         return ResponseEntityBuilder.ok(querySql);
+    }
+
+    private Stream<List<String>> filterQueriesByUserAndQueryId(Stream<List<String>> queryStream, String queryId) {
+        // filter by user
+        // Only admin or root user can see all profile.
+        // Common user can only review the query of their own.
+        String user = ConnectContext.get().getCurrentUserIdentity().getQualifiedUser();
+        if (!user.equalsIgnoreCase(Auth.ADMIN_USER) && !user.equalsIgnoreCase(Auth.ROOT_USER)) {
+            queryStream = queryStream.filter(q -> q.get(1).equals(user));
+        }
+        if (!Strings.isNullOrEmpty(queryId)) {
+            queryStream = queryStream.filter(query -> query.get(0).equals(queryId));
+        }
+        return queryStream;
     }
 
     /**
@@ -251,7 +269,14 @@ public class QueryProfileAction extends RestBaseController {
             @RequestParam(value = INSTANCE_ID, required = false) String instanceId,
             @RequestParam(value = IS_ALL_NODE_PARA, required = false, defaultValue = "true") boolean isAllNode) {
         executeCheckPassword(request, response);
-        checkGlobalAuth(ConnectContext.get().getCurrentUserIdentity(), PrivPredicate.ADMIN);
+
+        if (!isAllNode) {
+            try {
+                checkAuthByUserAndQueryId(queryId);
+            } catch (AuthenticationException e) {
+                return ResponseEntityBuilder.badRequest(e.getMessage());
+            }
+        }
 
         if (format.equals("text")) {
             return getTextProfile(request, queryId, isAllNode);
@@ -278,7 +303,6 @@ public class QueryProfileAction extends RestBaseController {
             @PathVariable("trace_id") String traceId,
             @RequestParam(value = IS_ALL_NODE_PARA, required = false, defaultValue = "true") boolean isAllNode) {
         executeCheckPassword(request, response);
-        checkGlobalAuth(ConnectContext.get().getCurrentUserIdentity(), PrivPredicate.ADMIN);
 
         if (isAllNode) {
             String httpPath = "/rest/v2/manager/query/trace_id/" + traceId;
@@ -305,9 +329,32 @@ public class QueryProfileAction extends RestBaseController {
             if (Strings.isNullOrEmpty(queryId)) {
                 return ResponseEntityBuilder.badRequest("Not found");
             }
+
+            try {
+                checkAuthByUserAndQueryId(queryId);
+            } catch (AuthenticationException e) {
+                return ResponseEntityBuilder.badRequest(e.getMessage());
+            }
+
             return ResponseEntityBuilder.ok(queryId);
         }
         return ResponseEntityBuilder.badRequest("not found query id");
+    }
+
+    /**
+     *  Query qError.
+     */
+    @RequestMapping(path = "/qerror/{id}", method = RequestMethod.GET)
+    public ResponseEntity<String> getStats(@PathVariable(value = "id") String id) {
+        ProfileElement profile = ProfileManager.getInstance().findProfileElementObject(id);
+        if (profile == null) {
+            return ResponseEntityBuilder.notFound(null);
+        }
+        StatsErrorEstimator statsErrorEstimator = profile.statsErrorEstimator;
+        if (statsErrorEstimator == null) {
+            return ResponseEntityBuilder.notFound(null);
+        }
+        return ResponseEntity.ok(GsonUtils.GSON.toJson(statsErrorEstimator));
     }
 
     @RequestMapping(path = "/profile/fragments/{query_id}", method = RequestMethod.GET)
@@ -315,7 +362,6 @@ public class QueryProfileAction extends RestBaseController {
             @PathVariable("query_id") String queryId,
             @RequestParam(value = IS_ALL_NODE_PARA, required = false, defaultValue = "true") boolean isAllNode) {
         executeCheckPassword(request, response);
-        checkGlobalAuth(ConnectContext.get().getCurrentUserIdentity(), PrivPredicate.ADMIN);
 
         if (isAllNode) {
             String httpPath = "/rest/v2/manager/query/profile/fragments/" + queryId;
@@ -337,6 +383,12 @@ public class QueryProfileAction extends RestBaseController {
                 }
             }
         } else {
+            try {
+                checkAuthByUserAndQueryId(queryId);
+            } catch (AuthenticationException e) {
+                return ResponseEntityBuilder.badRequest(e.getMessage());
+            }
+
             try {
                 return ResponseEntityBuilder.ok(ProfileManager.getInstance().getFragmentsAndInstances(queryId));
             } catch (AnalysisException e) {
@@ -396,14 +448,14 @@ public class QueryProfileAction extends RestBaseController {
             try {
                 JSONObject json;
                 if (Strings.isNullOrEmpty(fragmentId) || Strings.isNullOrEmpty(instanceId)) {
-                    ProfileTreeNode treeRoot = ProfileManager.getInstance().getFragmentProfileTree(queryId, queryId);
-                    json = ProfileTreePrinter.printFragmentTreeInJson(treeRoot, ProfileTreePrinter.PrintLevel.FRAGMENT);
+                    String brief = ProfileManager.getInstance().getProfileBrief(queryId);
+                    graph.put("profile", brief);
                 } else {
                     ProfileTreeNode treeRoot = ProfileManager.getInstance()
                             .getInstanceProfileTree(queryId, queryId, fragmentId, instanceId);
                     json = ProfileTreePrinter.printFragmentTreeInJson(treeRoot, ProfileTreePrinter.PrintLevel.INSTANCE);
+                    graph.put("profile", json.toJSONString());
                 }
-                graph.put("profile", json.toJSONString());
             } catch (Exception e) {
                 LOG.warn("get profile graph error, queryId:{}, fragementId:{}, instanceId:{}", queryId, fragmentId,
                         instanceId, e);
@@ -429,13 +481,21 @@ public class QueryProfileAction extends RestBaseController {
         Map<String, String> result = Maps.newHashMap();
         if (!dataList.isEmpty()) {
             try {
-                String profile = JsonParser.parseString(dataList.get(0)).getAsJsonObject().get("profile").getAsString();
-                result.put("profile", profile);
+                String key = format.equals("graph") ? "graph" : "profile";
+                String profile = JsonParser.parseString(dataList.get(0)).getAsJsonObject().get(key).getAsString();
+                result.put(key, profile);
             } catch (Exception e) {
                 return ResponseEntityBuilder.badRequest(e.getMessage());
             }
         }
         return ResponseEntityBuilder.ok(result);
+    }
+
+    private void checkAuthByUserAndQueryId(String queryId) throws AuthenticationException {
+        String user = ConnectContext.get().getCurrentUserIdentity().getQualifiedUser();
+        if (!user.equalsIgnoreCase(Auth.ADMIN_USER) && !user.equalsIgnoreCase(Auth.ROOT_USER)) {
+            ProfileManager.getInstance().checkAuthByUserAndQueryId(user, queryId);
+        }
     }
 
     /**

@@ -16,20 +16,12 @@
 // under the License.
 
 suite("test_insert_nested_array", "load") {
-    def test_nested_array_2_depths = { enable_vectorized ->
-        sql "ADMIN SET FRONTEND CONFIG ('enable_array_type' = 'true')"
-        sql "set enable_vectorized_engine = ${enable_vectorized}"
-
-        def tableName
-        if (enable_vectorized) {
-            tableName = "nested_array_test_2_vectorized"
-        } else {
-            tableName = "nested_array_test_2_non_vectorized"
-        }
+    def test_nested_array_2_depths = {
+        def tableName = "nested_array_test_2_vectorized"
 
         sql "DROP TABLE IF EXISTS ${tableName}"
         sql """
-            CREATE TABLE ${tableName} (
+            CREATE TABLE IF NOT EXISTS ${tableName} (
                 `key` INT,
                 value ARRAY<ARRAY<INT>>
             ) DUPLICATE KEY (`key`) DISTRIBUTED BY HASH (`key`) BUCKETS 1
@@ -52,22 +44,15 @@ suite("test_insert_nested_array", "load") {
                 (6, [[1, 2, null], null, [4, null, 6], null, [null, 8, 9]])
         """
         qt_select "select * from ${tableName} order by `key`"
+        qt_select "select count(value) from ${tableName}"
     }
 
-    def test_nested_array_3_depths = { enable_vectorized ->
-        sql "ADMIN SET FRONTEND CONFIG ('enable_array_type' = 'true')"
-        sql "set enable_vectorized_engine = ${enable_vectorized}"
-
-        def tableName
-        if (enable_vectorized) {
-            tableName = "nested_array_test_3_vectorized"
-        } else {
-            tableName = "nested_array_test_3_non_vectorized"
-        }
+    def test_nested_array_3_depths = {
+        def tableName = "nested_array_test_3_vectorized"
 
         sql "DROP TABLE IF EXISTS ${tableName}"
         sql """
-            CREATE TABLE ${tableName} (
+            CREATE TABLE IF NOT EXISTS ${tableName} (
                 `key` INT,
                 value ARRAY<ARRAY<ARRAY<INT>>>
             ) DUPLICATE KEY (`key`) DISTRIBUTED BY HASH (`key`) BUCKETS 1
@@ -90,11 +75,11 @@ suite("test_insert_nested_array", "load") {
                 (6, [[[null]], [[1], [2, 3]], [[4, 5, 6], null, null]])
         """
         qt_select "select * from ${tableName} order by `key`"
+        qt_select "select count(value) from ${tableName}"
+        qt_select "select * from ${tableName} as t1 right join ${tableName} as t2 on t1.`key` = t2.`key` order by t1.`key`"
     }
 
-    test_nested_array_2_depths.call(false)
-    test_nested_array_2_depths.call(true)
+    test_nested_array_2_depths.call()
 
-    test_nested_array_3_depths.call(false)
-    test_nested_array_3_depths.call(true)
+    test_nested_array_3_depths.call()
 }

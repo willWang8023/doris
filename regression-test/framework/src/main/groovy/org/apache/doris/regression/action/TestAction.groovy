@@ -38,6 +38,7 @@ import org.apache.doris.regression.util.JdbcUtils
 import org.junit.Assert
 
 import java.util.function.Consumer
+import java.util.Random
 
 @Slf4j
 @CompileStatic
@@ -189,7 +190,7 @@ class TestAction implements SuiteAction {
         return new ActionResult(result, ex, startTime, endTime, meta)
     }
 
-    void sql(String sql) {
+    void sql(String sql, boolean setRandomParallel = true) {
         this.sql = sql
     }
 

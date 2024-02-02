@@ -70,9 +70,8 @@ while true; do
     esac
 done
 
-if [[ ${HELP} -eq 1 ]]; then
+if [[ "${HELP}" -eq 1 ]]; then
     usage
-    exit
 fi
 
 check_prerequest() {
@@ -94,7 +93,6 @@ export MYSQL_PWD=${PASSWORD}
 echo "FE_HOST: ${FE_HOST}"
 echo "FE_QUERY_PORT: ${FE_QUERY_PORT}"
 echo "USER: ${USER}"
-echo "PASSWORD: ${PASSWORD}"
 echo "DB: ${DB}"
 
 run_sql() {
@@ -104,10 +102,6 @@ run_sql() {
 
 echo '============================================'
 echo "optimize some session variables before run, and then restore it after run."
-origin_enable_vectorized_engine=$(
-    set -e
-    run_sql 'select @@enable_vectorized_engine;' | sed -n '3p'
-)
 origin_parallel_fragment_exec_instance_num=$(
     set -e
     run_sql 'select @@parallel_fragment_exec_instance_num;' | sed -n '3p'
@@ -128,7 +122,6 @@ origin_runtime_filter_mode=$(
     set -e
     run_sql 'select @@runtime_filter_mode;' | sed -n '3p'
 )
-run_sql "set global enable_vectorized_engine=1;"
 run_sql "set global parallel_fragment_exec_instance_num=8;"
 run_sql "set global exec_mem_limit=48G;"
 run_sql "set global batch_size=4096;"
@@ -139,20 +132,34 @@ run_sql "show variables;"
 echo '============================================'
 run_sql "show table status;"
 echo '============================================'
+start=$(date +%s)
+run_sql "analyze table part with sync;"
+run_sql "analyze table customer with sync;"
+run_sql "analyze table supplier with sync;"
+run_sql "analyze table dates with sync;"
+run_sql "analyze table lineorder with sync;"
+end=$(date +%s)
+totalTime=$((end - start))
+echo "analyze database ${DB} with sync total time: ${totalTime} s"
+echo '============================================'
 
 sum=0
 for i in '1.1' '1.2' '1.3' '2.1' '2.2' '2.3' '3.1' '3.2' '3.3' '3.4' '4.1' '4.2' '4.3'; do
-    # Each query is executed 3 times and takes the average time
-    res=$(mysqlslap -h"${FE_HOST}" -P"${FE_QUERY_PORT}" -u"${USER}" --create-schema="${DB}" --query="${QUERIES_DIR}/q${i}.sql" -F '\r' -i 3 | sed -n '2p' | cut -d ' ' -f 9,10)
-    echo "q${i}: ${res}"
-    cost=$(echo "${res}" | cut -d' ' -f1)
+    # Each query is executed 3 times and takes the min time
+    res1=$(mysql -vvv -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -D"${DB}" -e "$(cat "${QUERIES_DIR}"/q"${i}".sql)" | perl -nle 'print $1 if /\((\d+\.\d+)+ sec\)/' || :)
+    res2=$(mysql -vvv -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -D"${DB}" -e "$(cat "${QUERIES_DIR}"/q"${i}".sql)" | perl -nle 'print $1 if /\((\d+\.\d+)+ sec\)/' || :)
+    res3=$(mysql -vvv -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -D"${DB}" -e "$(cat "${QUERIES_DIR}"/q"${i}".sql)" | perl -nle 'print $1 if /\((\d+\.\d+)+ sec\)/' || :)
+
+    min_value=$(echo "${res1} ${res2} ${res3}" | tr ' ' '\n' | sort -n | head -n 1)
+    echo -e "q${i}:\t${res1}\t${res2}\t${res3}\tfast:${min_value}"
+
+    cost=$(echo "${min_value}" | cut -d' ' -f1)
     sum=$(echo "${sum} + ${cost}" | bc)
 done
 echo "total time: ${sum} seconds"
 
 echo '============================================'
 echo "restore session variables"
-run_sql "set global enable_vectorized_engine=${origin_enable_vectorized_engine};"
 run_sql "set global parallel_fragment_exec_instance_num=${origin_parallel_fragment_exec_instance_num};"
 run_sql "set global exec_mem_limit=${origin_exec_mem_limit};"
 run_sql "set global batch_size=${origin_batch_size};"
@@ -160,4 +167,4 @@ run_sql "set global enable_projection=${origin_enable_projection};"
 run_sql "set global runtime_filter_mode=${origin_runtime_filter_mode};"
 echo '============================================'
 
-echo 'Done.'
+echo 'Finish ssb queries.'

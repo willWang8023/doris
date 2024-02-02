@@ -6,7 +6,7 @@
 
 ---
 
-<!-- 
+<!--
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
 distributed with this work for additional information
@@ -104,8 +104,8 @@ under the License.
 | OLAP_ERR_CE_TABLET_ID_EXIST                      | -305   | tablet Id不存在错误                                          |
 | OLAP_ERR_CE_TRY_CE_LOCK_ERROR                    | -306   | 尝试获取执行命令锁错误                                       |
 | Tablet错误异常代码                               |        |                                                              |
-| OLAP_ERR_TABLE_VERSION_DUPLICATE_ERROR           | -400   | tablet副本版本错误                                           |
-| OLAP_ERR_TABLE_VERSION_INDEX_MISMATCH_ERROR      | -401   | teblet版本索引不匹配异常                                     |
+| OLAP_ERR_TABLE_VERSION_DUPLICATE_ERROR           | -400   | tablet 副本版本错误                                          |
+| OLAP_ERR_TABLE_VERSION_INDEX_MISMATCH_ERROR      | -401   | tablet 版本索引不匹配异常                                     |
 | OLAP_ERR_TABLE_INDEX_VALIDATE_ERROR              | -402   | 这里不检查tablet的初始版本，因为如果在一个tablet进行schema-change时重新启动 BE，我们可能会遇到空tablet异常 |
 | OLAP_ERR_TABLE_INDEX_FIND_ERROR                  | -403   | 无法获得第一个Block块位置 或者找到最后一行Block块失败会引发此异常 |
 | OLAP_ERR_TABLE_CREATE_FROM_HEADER_ERROR          | -404   | 无法加载Tablet的时候会触发此异常                             |
@@ -182,7 +182,6 @@ under the License.
 | RowBlock错误代码                                 |        |                                                              |
 | OLAP_ERR_ROWBLOCK_DECOMPRESS_ERROR               | -1300  | Rowblock解压缩错误                                           |
 | OLAP_ERR_ROWBLOCK_FIND_ROW_EXCEPTION             | -1301  | 获取Block Entry失败                                          |
-| OLAP_ERR_ROWBLOCK_READ_INFO_ERROR                | -1302  | 读取Rowblock信息错误                                         |
 | Tablet元数据错误                                 |        |                                                              |
 | OLAP_ERR_HEADER_ADD_VERSION                      | -1400  | tablet元数据增加版本                                         |
 | OLAP_ERR_HEADER_DELETE_VERSION                   | -1401  | tablet元数据删除版本                                         |
@@ -208,7 +207,7 @@ under the License.
 | OLAP_ERR_PREVIOUS_SCHEMA_CHANGE_NOT_FINISHED     | -1603  | 先前的Schema更改未完成                                       |
 | OLAP_ERR_SCHEMA_CHANGE_INFO_INVALID              | -1604  | Schema变更信息无效                                           |
 | OLAP_ERR_QUERY_SPLIT_KEY_ERR                     | -1605  | 查询 Split key 错误                                          |
-| OLAP_ERR_DATA_QUALITY_ERR                        | -1606  | 模式更改/物化视图期间数据质量问题导致的错误                  |
+| OLAP_ERR_DATA_QUALITY_ERROR                      | -1606  | 模式更改/物化视图期间因数据质量问题或内存使用超出限制导致的错误                  |
 | Column File错误代码                              |        |                                                              |
 | OLAP_ERR_COLUMN_DATA_LOAD_BLOCK                  | -1700  | 加载列数据块错误                                             |
 | OLAP_ERR_COLUMN_DATA_RECORD_INDEX                | -1701  | 加载数据记录索引错误                                         |
@@ -254,7 +253,9 @@ under the License.
 | OLAP_ERR_ROWSET_ALREADY_EXIST                    | -3106  | Rowset已经存在                                               |
 | OLAP_ERR_ROWSET_CREATE_READER                    | -3107  | Rowset创建读对象失败                                         |
 | OLAP_ERR_ROWSET_INVALID                          | -3108  | Rowset无效                                                   |
-| OLAP_ERR_ROWSET_LOAD_FAILED                      | -3109  | Rowset加载失败                                               |
 | OLAP_ERR_ROWSET_READER_INIT                      | -3110  | Rowset读对象初始化失败                                       |
-| OLAP_ERR_ROWSET_READ_FAILED                      | -3111  | Rowset读失败                                                 |
 | OLAP_ERR_ROWSET_INVALID_STATE_TRANSITION         | -3112  | Rowset无效的事务状态                                         |
+| OLAP_ERR_ROWSET_RENAME_FILE_FAILED               | -3116  | Rowset重命名文件失败                                         |
+| OLAP_ERR_SEGCOMPACTION_INIT_READER               | -3117  | SegmentCompaction初始化Reader失败                            |
+| OLAP_ERR_SEGCOMPACTION_INIT_WRITER               | -3118  | SegmentCompaction初始化Writer失败                            |
+| OLAP_ERR_SEGCOMPACTION_FAILED                    | -3119  | SegmentCompaction失败                                        |

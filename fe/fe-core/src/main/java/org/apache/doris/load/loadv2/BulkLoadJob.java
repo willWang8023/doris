@@ -19,6 +19,7 @@ package org.apache.doris.load.loadv2;
 
 import org.apache.doris.analysis.BrokerDesc;
 import org.apache.doris.analysis.DataDescription;
+import org.apache.doris.analysis.InsertStmt;
 import org.apache.doris.analysis.LoadStmt;
 import org.apache.doris.analysis.SqlParser;
 import org.apache.doris.analysis.SqlScanner;
@@ -26,10 +27,13 @@ import org.apache.doris.analysis.UserIdentity;
 import org.apache.doris.catalog.AuthorizationInfo;
 import org.apache.doris.catalog.Database;
 import org.apache.doris.catalog.Env;
+import org.apache.doris.catalog.EnvFactory;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.common.DdlException;
+import org.apache.doris.common.FeMetaVersion;
 import org.apache.doris.common.MetaNotFoundException;
+import org.apache.doris.common.annotation.LogException;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.util.LogBuilder;
 import org.apache.doris.common.util.LogKey;
@@ -38,8 +42,8 @@ import org.apache.doris.load.BrokerFileGroup;
 import org.apache.doris.load.BrokerFileGroupAggInfo;
 import org.apache.doris.load.EtlJobType;
 import org.apache.doris.load.FailMsg;
-import org.apache.doris.plugin.AuditEvent;
-import org.apache.doris.plugin.LoadAuditEvent;
+import org.apache.doris.plugin.audit.AuditEvent;
+import org.apache.doris.plugin.audit.LoadAuditEvent;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.OriginStatement;
 import org.apache.doris.qe.SessionVariable;
@@ -51,7 +55,7 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -64,6 +68,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -76,10 +81,8 @@ public abstract class BulkLoadJob extends LoadJob {
     protected BrokerDesc brokerDesc;
     // this param is used to persist the expr of columns
     // the origin stmt is persisted instead of columns expr
-    // the expr of columns will be reanalyze when the log is replayed
+    // the expr of columns will be reanalyzed when the log is replayed
     private OriginStatement originStmt;
-
-    private UserIdentity userInfo;
 
     // include broker desc and data desc
     protected BrokerFileGroupAggInfo fileGroupAggInfo = new BrokerFileGroupAggInfo();
@@ -87,7 +90,7 @@ public abstract class BulkLoadJob extends LoadJob {
 
     // sessionVariable's name -> sessionVariable's value
     // we persist these sessionVariables due to the session is not available when replaying the job.
-    private Map<String, String> sessionVariables = Maps.newHashMap();
+    protected Map<String, String> sessionVariables = Maps.newHashMap();
 
     public BulkLoadJob(EtlJobType jobType) {
         super(jobType);
@@ -118,8 +121,9 @@ public abstract class BulkLoadJob extends LoadJob {
         try {
             switch (stmt.getEtlJobType()) {
                 case BROKER:
-                    bulkLoadJob = new BrokerLoadJob(db.getId(), stmt.getLabel().getLabelName(), stmt.getBrokerDesc(),
-                            stmt.getOrigStmt(), stmt.getUserInfo());
+                    bulkLoadJob = EnvFactory.getInstance().createBrokerLoadJob(db.getId(),
+                            stmt.getLabel().getLabelName(), stmt.getBrokerDesc(), stmt.getOrigStmt(),
+                            stmt.getUserInfo());
                     break;
                 case SPARK:
                     bulkLoadJob = new SparkLoadJob(db.getId(), stmt.getLabel().getLabelName(), stmt.getResourceDesc(),
@@ -133,6 +137,7 @@ public abstract class BulkLoadJob extends LoadJob {
                 default:
                     throw new DdlException("Unknown load job type.");
             }
+            bulkLoadJob.setComment(stmt.getComment());
             bulkLoadJob.setJobProperties(stmt.getProperties());
             bulkLoadJob.checkAndSetDataSourceInfo((Database) db, stmt.getDataDescriptions());
             return bulkLoadJob;
@@ -176,6 +181,7 @@ public abstract class BulkLoadJob extends LoadJob {
                 .collect(Collectors.toSet());
     }
 
+    @LogException
     @Override
     public Set<String> getTableNames() throws MetaNotFoundException {
         Set<String> result = Sets.newHashSet();
@@ -206,7 +212,10 @@ public abstract class BulkLoadJob extends LoadJob {
             if (loadTask == null) {
                 return;
             }
-            if (loadTask.getRetryTime() <= 0) {
+            Predicate<LoadTask> isTaskTimeout =
+                    (LoadTask task) -> task instanceof LoadLoadingTask
+                            && ((LoadLoadingTask) task).getLeftTimeMs() <= 0;
+            if (loadTask.getRetryTime() <= 0 || isTaskTimeout.test(loadTask)) {
                 unprotectedExecuteCancel(failMsg, true);
                 logFinalOperation();
                 return;
@@ -292,7 +301,6 @@ public abstract class BulkLoadJob extends LoadJob {
         super.write(out);
         brokerDesc.write(out);
         originStmt.write(out);
-        userInfo.write(out);
 
         out.writeInt(sessionVariables.size());
         for (Map.Entry<String, String> entry : sessionVariables.entrySet()) {
@@ -301,17 +309,23 @@ public abstract class BulkLoadJob extends LoadJob {
         }
     }
 
+    public OriginStatement getOriginStmt() {
+        return this.originStmt;
+    }
+
     public void readFields(DataInput in) throws IOException {
         super.readFields(in);
         brokerDesc = BrokerDesc.read(in);
         originStmt = OriginStatement.read(in);
         // The origin stmt does not be analyzed in here.
-        // The reason is that it will thrown MetaNotFoundException when the tableId could not be found by tableName.
+        // The reason is that it will throw MetaNotFoundException when the tableId could not be found by tableName.
         // The origin stmt will be analyzed after the replay is completed.
 
-        userInfo = UserIdentity.read(in);
-        // must set is as analyzed, because when write the user info to meta image, it will be checked.
-        userInfo.setIsAnalyzed();
+        if (Env.getCurrentEnvJournalVersion() < FeMetaVersion.VERSION_117) {
+            userInfo = UserIdentity.read(in);
+            // must set is as analyzed, because when write the user info to meta image, it will be checked.
+            userInfo.setIsAnalyzed();
+        }
         int size = in.readInt();
         for (int i = 0; i < size; i++) {
             String key = Text.readString(in);
@@ -322,6 +336,11 @@ public abstract class BulkLoadJob extends LoadJob {
 
     public UserIdentity getUserInfo() {
         return userInfo;
+    }
+
+    public void recycleProgress() {
+        // Recycle memory occupied by Progress.
+        Env.getCurrentProgressManager().removeProgress(String.valueOf(id));
     }
 
     @Override
@@ -363,5 +382,38 @@ public abstract class BulkLoadJob extends LoadJob {
             return properties.get("fs.s3a.access.key");
         }
         return null;
+    }
+
+    // ---------------- for load stmt ----------------
+    public static BulkLoadJob fromInsertStmt(InsertStmt insertStmt) throws DdlException {
+        // get db id
+        String dbName = insertStmt.getLoadLabel().getDbName();
+        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException(dbName);
+
+        // create job
+        BulkLoadJob bulkLoadJob;
+        try {
+            switch (insertStmt.getLoadType()) {
+                case BROKER_LOAD:
+                    bulkLoadJob = EnvFactory.getInstance().createBrokerLoadJob(db.getId(),
+                            insertStmt.getLoadLabel().getLabelName(), (BrokerDesc) insertStmt.getResourceDesc(),
+                            insertStmt.getOrigStmt(), insertStmt.getUserInfo());
+                    break;
+                case SPARK_LOAD:
+                    bulkLoadJob = new SparkLoadJob(db.getId(), insertStmt.getLoadLabel().getLabelName(),
+                            insertStmt.getResourceDesc(),
+                            insertStmt.getOrigStmt(), insertStmt.getUserInfo());
+                    break;
+                default:
+                    throw new DdlException("Unknown load job type.");
+            }
+            bulkLoadJob.setComment(insertStmt.getComments());
+            bulkLoadJob.setJobProperties(insertStmt.getProperties());
+            // TODO(tsy): use generic and change the param in checkAndSetDataSourceInfo
+            bulkLoadJob.checkAndSetDataSourceInfo(db, (List<DataDescription>) insertStmt.getDataDescList());
+            return bulkLoadJob;
+        } catch (MetaNotFoundException e) {
+            throw new DdlException(e.getMessage());
+        }
     }
 }

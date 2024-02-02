@@ -17,8 +17,14 @@
 
 #pragma once
 
+#include <type_traits>
+
+#include "gutil/integral_types.h"
 namespace doris {
-enum PrimitiveType {
+
+using PrimitiveNative = uint8_t;
+
+enum PrimitiveType : PrimitiveNative {
     INVALID_TYPE = 0,
     TYPE_NULL,     /* 1 */
     TYPE_BOOLEAN,  /* 2 */
@@ -43,16 +49,25 @@ enum PrimitiveType {
     TYPE_HLL,       /* 19 */
     TYPE_DECIMALV2, /* 20 */
 
-    TYPE_TIME,           /* 21 */
-    TYPE_OBJECT,         /* 22 */
-    TYPE_STRING,         /* 23 */
-    TYPE_QUANTILE_STATE, /* 24 */
-    TYPE_DATEV2,         /* 25 */
-    TYPE_DATETIMEV2,     /* 26 */
-    TYPE_TIMEV2,         /* 27 */
-    TYPE_DECIMAL32,      /* 28 */
-    TYPE_DECIMAL64,      /* 29 */
-    TYPE_DECIMAL128,     /* 30 */
+    TYPE_TIME,            /* 21 */
+    TYPE_OBJECT,          /* 22 */
+    TYPE_STRING,          /* 23 */
+    TYPE_QUANTILE_STATE,  /* 24 */
+    TYPE_DATEV2,          /* 25 */
+    TYPE_DATETIMEV2,      /* 26 */
+    TYPE_TIMEV2,          /* 27 */
+    TYPE_DECIMAL32,       /* 28 */
+    TYPE_DECIMAL64,       /* 29 */
+    TYPE_DECIMAL128I,     /* 30 */
+    TYPE_JSONB,           /* 31 */
+    TYPE_VARIANT,         /* 32 */
+    TYPE_LAMBDA_FUNCTION, /* 33 */
+    TYPE_AGG_STATE,       /* 34 */
+    TYPE_DECIMAL256,      /* 35 */
+    TYPE_IPV4,            /* 36 */
+    TYPE_IPV6             /* 37 */
 };
 
-}
+constexpr PrimitiveNative BEGIN_OF_PRIMITIVE_TYPE = INVALID_TYPE;
+constexpr PrimitiveNative END_OF_PRIMITIVE_TYPE = TYPE_DECIMAL256;
+} // namespace doris

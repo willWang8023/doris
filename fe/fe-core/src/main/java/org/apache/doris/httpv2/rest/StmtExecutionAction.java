@@ -24,11 +24,13 @@ import org.apache.doris.analysis.SqlScanner;
 import org.apache.doris.analysis.StatementBase;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.TableIf;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.util.SqlParserUtils;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.httpv2.entity.ResponseEntityBuilder;
 import org.apache.doris.httpv2.util.ExecutionResultSet;
 import org.apache.doris.httpv2.util.StatementSubmitter;
+import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.system.SystemInfoService;
 
@@ -39,6 +41,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
@@ -66,6 +69,9 @@ import javax.servlet.http.HttpServletResponse;
 public class StmtExecutionAction extends RestBaseController {
     private static final Logger LOG = LogManager.getLogger(StmtExecutionAction.class);
     private static StatementSubmitter stmtSubmitter = new StatementSubmitter();
+    private static final String  NEW_LINE_PATTERN = "[\n\r]";
+
+    private static final String NEW_LINE_REPLACEMENT = " ";
 
     private static final long DEFAULT_ROW_LIMIT = 1000;
     private static final long MAX_ROW_LIMIT = 10000;
@@ -82,7 +88,15 @@ public class StmtExecutionAction extends RestBaseController {
     @RequestMapping(path = "/api/query/{" + NS_KEY + "}/{" + DB_KEY + "}", method = {RequestMethod.POST})
     public Object executeSQL(@PathVariable(value = NS_KEY) String ns, @PathVariable(value = DB_KEY) String dbName,
             HttpServletRequest request, HttpServletResponse response, @RequestBody String body) {
+        if (needRedirect(request.getScheme())) {
+            return redirectToHttps(request);
+        }
+
         ActionAuthorizationInfo authInfo = checkWithCookie(request, response, false);
+        String fullDbName = getFullDbName(dbName);
+        if (Config.enable_all_http_auth) {
+            checkDbAuth(ConnectContext.get().getCurrentUserIdentity(), fullDbName, PrivPredicate.ADMIN);
+        }
 
         if (ns.equalsIgnoreCase(SystemInfoService.DEFAULT_CLUSTER)) {
             ns = InternalCatalog.INTERNAL_CATALOG_NAME;
@@ -99,7 +113,7 @@ public class StmtExecutionAction extends RestBaseController {
                 stmtRequestBody.limit);
 
         ConnectContext.get().changeDefaultCatalog(ns);
-        ConnectContext.get().setDatabase(getFullDbName(dbName));
+        ConnectContext.get().setDatabase(fullDbName);
 
         String streamHeader = request.getHeader("X-Doris-Stream");
         boolean isStream = !("false".equalsIgnoreCase(streamHeader));
@@ -119,15 +133,21 @@ public class StmtExecutionAction extends RestBaseController {
      * @return plain text of create table stmts
      */
     @RequestMapping(path = "/api/query_schema/{" + NS_KEY + "}/{" + DB_KEY + "}", method = {RequestMethod.POST})
-    public String querySchema(@PathVariable(value = NS_KEY) String ns, @PathVariable(value = DB_KEY) String dbName,
+    public Object querySchema(@PathVariable(value = NS_KEY) String ns, @PathVariable(value = DB_KEY) String dbName,
             HttpServletRequest request, HttpServletResponse response, @RequestBody String sql) {
+        if (needRedirect(request.getScheme())) {
+            return redirectToHttps(request);
+        }
+
         checkWithCookie(request, response, false);
 
         if (ns.equalsIgnoreCase(SystemInfoService.DEFAULT_CLUSTER)) {
             ns = InternalCatalog.INTERNAL_CATALOG_NAME;
         }
+        if (StringUtils.isNotBlank(sql)) {
+            sql = sql.replaceAll(NEW_LINE_PATTERN, NEW_LINE_REPLACEMENT);
+        }
         LOG.info("sql: {}", sql);
-
         ConnectContext.get().changeDefaultCatalog(ns);
         ConnectContext.get().setDatabase(getFullDbName(dbName));
         return getSchema(sql);
@@ -156,10 +176,7 @@ public class StmtExecutionAction extends RestBaseController {
                     return null;
                 }
                 return ResponseEntityBuilder.ok(resultSet.getResult());
-            } catch (InterruptedException e) {
-                LOG.warn("failed to execute stmt", e);
-                return ResponseEntityBuilder.okWithCommonError("Failed to execute sql: " + e.getMessage());
-            } catch (ExecutionException e) {
+            } catch (InterruptedException | ExecutionException e) {
                 LOG.warn("failed to execute stmt", e);
                 return ResponseEntityBuilder.okWithCommonError("Failed to execute sql: " + e.getMessage());
             }

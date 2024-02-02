@@ -41,8 +41,6 @@ public class DropMaterializedViewStmt extends DdlStmt {
 
     private String mvName;
     private TableName tableName;
-
-    private TableName mtmvName;
     private boolean ifExists;
 
     public DropMaterializedViewStmt(boolean ifExists, String mvName, TableName tableName) {
@@ -51,20 +49,8 @@ public class DropMaterializedViewStmt extends DdlStmt {
         this.ifExists = ifExists;
     }
 
-    public DropMaterializedViewStmt(boolean ifExists, TableName mvName) {
-        this.mtmvName = mvName;
-        this.ifExists = ifExists;
-        this.tableName = null;
-    }
-
     public String getMvName() {
-        if (tableName != null) {
-            return mvName;
-        } else if (mtmvName != null) {
-            return mtmvName.toString();
-        } else {
-            return null;
-        }
+        return mvName;
     }
 
     public TableName getTableName() {
@@ -77,9 +63,6 @@ public class DropMaterializedViewStmt extends DdlStmt {
 
     @Override
     public void analyze(Analyzer analyzer) throws UserException {
-        if (mtmvName != null && tableName == null) {
-            throw new AnalysisException("Multi table materialized view is not supported now.");
-        }
         if (Strings.isNullOrEmpty(mvName)) {
             throw new AnalysisException("The materialized name could not be empty or null.");
         }
@@ -88,7 +71,7 @@ public class DropMaterializedViewStmt extends DdlStmt {
         Util.prohibitExternalCatalog(tableName.getCtl(), this.getClass().getSimpleName());
 
         // check access
-        if (!Env.getCurrentEnv().getAuth().checkTblPriv(ConnectContext.get(), tableName.getDb(),
+        if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(ConnectContext.get(), tableName.getDb(),
                 tableName.getTbl(), PrivPredicate.DROP)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR, "DROP");
         }
@@ -101,12 +84,8 @@ public class DropMaterializedViewStmt extends DdlStmt {
         if (ifExists) {
             stringBuilder.append("IF EXISTS ");
         }
-        if (mtmvName != null) {
-            stringBuilder.append(mtmvName.toSql());
-        } else {
-            stringBuilder.append("`").append(mvName).append("` ");
-            stringBuilder.append("ON ").append(tableName.toSql());
-        }
+        stringBuilder.append("`").append(mvName).append("` ");
+        stringBuilder.append("ON ").append(tableName.toSql());
         return stringBuilder.toString();
     }
 }

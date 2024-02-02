@@ -33,7 +33,9 @@ public class LogicalJoinToNestedLoopJoin extends OneImplementationRuleFactory {
                 .then(join -> new PhysicalNestedLoopJoin<>(
                         join.getJoinType(),
                         join.getHashJoinConjuncts(),
-                        join.getOtherJoinCondition(),
+                        join.getOtherJoinConjuncts(),
+                        join.getMarkJoinConjuncts(),
+                        join.getMarkJoinSlotReference(),
                         join.getLogicalProperties(),
                         join.left(),
                         join.right())

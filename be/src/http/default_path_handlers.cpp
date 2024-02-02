@@ -17,20 +17,33 @@
 
 #include "http/default_path_handlers.h"
 
-#include <gperftools/heap-profiler.h>
+#include <gen_cpp/Metrics_types.h>
+
+#include <boost/algorithm/string/replace.hpp>
+#ifdef USE_JEMALLOC
+#include "jemalloc/jemalloc.h"
+#else
 #include <gperftools/malloc_extension.h>
+#endif
 
-#include <boost/algorithm/string.hpp>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "agent/utils.h"
-#include "common/configbase.h"
+#include "common/config.h"
 #include "gutil/strings/numbers.h"
 #include "gutil/strings/substitute.h"
 #include "http/action/tablets_info_action.h"
 #include "http/web_page_handler.h"
+#include "runtime/memory/mem_tracker.h"
 #include "runtime/memory/mem_tracker_limiter.h"
-#include "util/debug_util.h"
+#include "util/easy_json.h"
+#include "util/mem_info.h"
 #include "util/perf_counters.h"
 #include "util/pretty_printer.h"
 #include "util/thread.h"
@@ -84,18 +97,24 @@ void config_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* 
 // Registered to handle "/memz", and prints out memory allocation statistics.
 void mem_usage_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* output) {
     (*output) << "<pre>"
-              << "Mem Limit: "
-              << PrettyPrinter::print(ExecEnv::GetInstance()->process_mem_tracker()->limit(),
-                                      TUnit::BYTES)
+              << "Mem Limit: " << PrettyPrinter::print(MemInfo::mem_limit(), TUnit::BYTES)
               << std::endl
               << "Physical Mem From Perf: "
               << PrettyPrinter::print(PerfCounters::get_vm_rss(), TUnit::BYTES) << std::endl
               << "</pre>";
 
     (*output) << "<pre>";
-#if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) || defined(THREAD_SANITIZER) || \
-        defined(USE_JEMALLOC)
+#if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) || defined(THREAD_SANITIZER)
     (*output) << "Memory tracking is not available with address sanitizer builds.";
+#elif defined(USE_JEMALLOC)
+    std::string tmp;
+    auto write_cb = [](void* opaque, const char* buf) {
+        auto* _opaque = static_cast<std::string*>(opaque);
+        _opaque->append(buf);
+    };
+    jemalloc_stats_print(write_cb, &tmp, "a");
+    boost::replace_all(tmp, "\n", "<br>");
+    (*output) << tmp << "</pre>";
 #else
     char buf[2048];
     MallocExtension::instance()->GetStats(buf, 2048);
@@ -107,28 +126,68 @@ void mem_usage_handler(const WebPageHandler::ArgumentMap& args, std::stringstrea
 }
 
 void display_tablets_callback(const WebPageHandler::ArgumentMap& args, EasyJson* ej) {
-    TabletsInfoAction tablet_info_action;
     std::string tablet_num_to_return;
-    WebPageHandler::ArgumentMap::const_iterator it = args.find("limit");
+    auto it = args.find("limit");
     if (it != args.end()) {
         tablet_num_to_return = it->second;
     } else {
         tablet_num_to_return = "1000"; // default
     }
-    (*ej) = tablet_info_action.get_tablets_info(tablet_num_to_return);
+    (*ej) = TabletsInfoAction::get_tablets_info(tablet_num_to_return);
 }
 
 // Registered to handle "/mem_tracker", and prints out memory tracker information.
 void mem_tracker_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* output) {
     (*output) << "<h1>Memory usage by subsystem</h1>\n";
+    std::vector<MemTracker::Snapshot> snapshots;
+    auto iter = args.find("type");
+    if (iter != args.end()) {
+        if (iter->second == "global") {
+            MemTrackerLimiter::make_type_snapshots(&snapshots, MemTrackerLimiter::Type::GLOBAL);
+        } else if (iter->second == "query") {
+            MemTrackerLimiter::make_type_snapshots(&snapshots, MemTrackerLimiter::Type::QUERY);
+        } else if (iter->second == "load") {
+            MemTrackerLimiter::make_type_snapshots(&snapshots, MemTrackerLimiter::Type::LOAD);
+        } else if (iter->second == "compaction") {
+            MemTrackerLimiter::make_type_snapshots(&snapshots, MemTrackerLimiter::Type::COMPACTION);
+        } else if (iter->second == "schema_change") {
+            MemTrackerLimiter::make_type_snapshots(&snapshots,
+                                                   MemTrackerLimiter::Type::SCHEMA_CHANGE);
+        } else if (iter->second == "clone") {
+            MemTrackerLimiter::make_type_snapshots(&snapshots, MemTrackerLimiter::Type::CLONE);
+        } else if (iter->second == "experimental") {
+            MemTrackerLimiter::make_type_snapshots(&snapshots,
+                                                   MemTrackerLimiter::Type::EXPERIMENTAL);
+        }
+    } else {
+        (*output) << "<h4>*Notice:</h4>\n";
+        (*output) << "<h4>    1. MemTracker only counts the memory on part of the main execution "
+                     "path, "
+                     "which is usually less than the real process memory.</h4>\n";
+        (*output) << "<h4>    2. each `type` is the sum of a set of tracker values, "
+                     "`sum of all trackers` is the sum of all trackers of all types, .</h4>\n";
+        (*output) << "<h4>    3. `process resident memory` is the physical memory of the process, "
+                     "from /proc VmRSS VmHWM.</h4>\n";
+        (*output) << "<h4>    4. `process virtual memory` is the virtual memory of the process, "
+                     "from /proc VmSize VmPeak.</h4>\n";
+        (*output) << "<h4>    5.`/mem_tracker?type=<type name>` to view the memory details of each "
+                     "type, for example, `/mem_tracker?type=query` will list the memory of all "
+                     "queries; "
+                     "`/mem_tracker?type=global` will list the memory of all Cache, metadata and "
+                     "other "
+                     "global life cycles.</h4>\n";
+        (*output) << "<h4>see documentation for details.";
+        MemTrackerLimiter::make_process_snapshots(&snapshots);
+    }
+
     (*output) << "<table data-toggle='table' "
                  "       data-pagination='true' "
                  "       data-search='true' "
                  "       class='table table-striped'>\n";
     (*output) << "<thead><tr>"
-                 "<th data-sortable='true'>Level</th>"
+                 "<th data-sortable='true'>Type</th>"
                  "<th data-sortable='true'>Label</th>"
-                 "<th>Parent</th>"
+                 "<th data-sortable='true'>Parent Label</th>"
                  "<th>Limit</th>"
                  "<th data-sortable='true' "
                  ">Current Consumption(Bytes)</th>"
@@ -136,35 +195,17 @@ void mem_tracker_handler(const WebPageHandler::ArgumentMap& args, std::stringstr
                  "<th data-sortable='true' "
                  ">Peak Consumption(Bytes)</th>"
                  "<th>Peak Consumption(Normalize)</th>"
-                 "<th data-sortable='true' "
-                 ">Child Count</th>"
                  "</tr></thead>";
     (*output) << "<tbody>\n";
-
-    size_t upper_level;
-    size_t cur_level = 1;
-    // the level equal or lower than upper_level will show in web page
-    auto iter = args.find("upper_level");
-    if (iter != args.end()) {
-        upper_level = std::stol(iter->second);
-    } else {
-        upper_level = 3;
-    }
-
-    std::vector<MemTracker::Snapshot> snapshots;
-    ExecEnv::GetInstance()->process_mem_tracker()->make_snapshot(&snapshots, cur_level,
-                                                                 upper_level);
-    MemTracker::make_global_mem_tracker_snapshot(&snapshots);
     for (const auto& item : snapshots) {
         string limit_str = item.limit == -1 ? "none" : AccurateItoaKMGT(item.limit);
         string current_consumption_normalize = AccurateItoaKMGT(item.cur_consumption);
         string peak_consumption_normalize = AccurateItoaKMGT(item.peak_consumption);
         (*output) << strings::Substitute(
                 "<tr><td>$0</td><td>$1</td><td>$2</td><td>$3</td><td>$4</td><td>$5</td><td>$6</"
-                "td><td>$7</td><td>$8</td></tr>\n",
-                item.level, item.label, item.parent, limit_str, item.cur_consumption,
-                current_consumption_normalize, item.peak_consumption, peak_consumption_normalize,
-                item.child_count);
+                "td><td>$7</td></tr>\n",
+                item.type, item.label, item.parent_label, limit_str, item.cur_consumption,
+                current_consumption_normalize, item.peak_consumption, peak_consumption_normalize);
     }
     (*output) << "</tbody></table>\n";
 }
@@ -349,11 +390,17 @@ void cpu_handler(const WebPageHandler::ArgumentMap& args, std::stringstream* out
 void add_default_path_handlers(WebPageHandler* web_page_handler) {
     // TODO(yingchun): logs_handler is not implemented yet, so not show it on navigate bar
     web_page_handler->register_page("/logs", "Logs", logs_handler, false /* is_on_nav_bar */);
-    web_page_handler->register_page("/varz", "Configs", config_handler, true /* is_on_nav_bar */);
+    if (!config::hide_webserver_config_page) {
+        web_page_handler->register_page("/varz", "Configs", config_handler,
+                                        true /* is_on_nav_bar */);
+    }
     web_page_handler->register_page("/memz", "Memory", mem_usage_handler, true /* is_on_nav_bar */);
     web_page_handler->register_page(
             "/mem_tracker", "MemTracker",
-            std::bind<void>(&mem_tracker_handler, std::placeholders::_1, std::placeholders::_2),
+            [](auto&& PH1, auto&& PH2) {
+                return mem_tracker_handler(std::forward<decltype(PH1)>(PH1),
+                                           std::forward<decltype(PH2)>(PH2));
+            },
             true /* is_on_nav_bar */);
     web_page_handler->register_page("/heap", "Heap Profile", heap_handler,
                                     true /* is_on_nav_bar */);
@@ -361,8 +408,10 @@ void add_default_path_handlers(WebPageHandler* web_page_handler) {
     register_thread_display_page(web_page_handler);
     web_page_handler->register_template_page(
             "/tablets_page", "Tablets",
-            std::bind<void>(&display_tablets_callback, std::placeholders::_1,
-                            std::placeholders::_2),
+            [](auto&& PH1, auto&& PH2) {
+                return display_tablets_callback(std::forward<decltype(PH1)>(PH1),
+                                                std::forward<decltype(PH2)>(PH2));
+            },
             true /* is_on_nav_bar */);
 }
 

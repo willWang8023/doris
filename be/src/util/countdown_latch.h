@@ -17,6 +17,7 @@
 
 #pragma once
 
+// IWYU pragma: no_include <bits/chrono.h>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -112,7 +113,7 @@ public:
     ~CountDownOnScopeExit() { _latch->count_down(); }
 
 private:
-    CountDownLatch* _latch;
+    CountDownLatch* _latch = nullptr;
 
     CountDownOnScopeExit(const CountDownOnScopeExit&) = delete;
     void operator=(const CountDownOnScopeExit&) = delete;

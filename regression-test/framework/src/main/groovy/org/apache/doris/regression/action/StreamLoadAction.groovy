@@ -22,6 +22,7 @@ import groovy.transform.stc.ClosureParams
 import groovy.transform.stc.FromString
 import org.apache.doris.regression.suite.SuiteContext
 import org.apache.doris.regression.util.BytesInputStream
+import org.apache.doris.regression.util.JdbcUtils
 import org.apache.doris.regression.util.OutputUtils
 import groovy.json.JsonSlurper
 import groovy.util.logging.Slf4j
@@ -39,7 +40,7 @@ import org.junit.Assert
 
 @Slf4j
 class StreamLoadAction implements SuiteAction {
-    public final InetSocketAddress address
+    public InetSocketAddress address
     public final String user
     public final String password
     String db
@@ -52,9 +53,10 @@ class StreamLoadAction implements SuiteAction {
     Closure check
     Map<String, String> headers
     SuiteContext context
+    boolean directToBe = false
 
     StreamLoadAction(SuiteContext context) {
-        this.address = context.config.feHttpInetSocketAddress
+        this.address = context.getFeHttpAddress()
         this.user = context.config.feHttpUser
         this.password = context.config.feHttpPassword
 
@@ -82,6 +84,11 @@ class StreamLoadAction implements SuiteAction {
         this.table = table.call()
     }
 
+    void directToBe(String beHost, int beHttpPort) {
+        this.address = new InetSocketAddress(beHost, beHttpPort)
+        this.directToBe = true
+    }
+
     void inputStream(InputStream inputStream) {
         this.inputStream = inputStream
     }
@@ -104,6 +111,14 @@ class StreamLoadAction implements SuiteAction {
 
     void inputText(Closure<String> inputText) {
         this.inputText = inputText.call()
+    }
+
+    void sql(String sql) {
+        headers.put('sql', sql)
+    }
+
+    void sql(Closure<String> sql) {
+        headers.put('sql', sql.call())
     }
 
     void file(String file) {
@@ -130,24 +145,37 @@ class StreamLoadAction implements SuiteAction {
         headers.put(key, value)
     }
 
+    void unset(String key) {
+        headers.remove(key)
+    }
+
     @Override
     void run() {
         String responseText = null
         Throwable ex = null
         long startTime = System.currentTimeMillis()
+        def isHttpStream = headers.containsKey("version")
         try {
-            def uri = "http://${address.hostString}:${address.port}/api/${db}/${table}/_stream_load"
+            def uri = isHttpStream ? "http://${address.hostString}:${address.port}/api/_http_stream"
+                    : "http://${address.hostString}:${address.port}/api/${db}/${table}/_stream_load"
             HttpClients.createDefault().withCloseable { client ->
                 RequestBuilder requestBuilder = prepareRequestHeader(RequestBuilder.put(uri))
                 HttpEntity httpEntity = prepareHttpEntity(client)
-                String beLocation = streamLoadToFe(client, requestBuilder)
-                responseText = streamLoadToBe(client, requestBuilder, beLocation, httpEntity)
+                if (!directToBe) {
+                    String beLocation = streamLoadToFe(client, requestBuilder)
+                    log.info("Redirect stream load to ${beLocation}".toString())
+                    requestBuilder.setUri(beLocation)
+                }
+                requestBuilder.setEntity(httpEntity)
+                responseText = streamLoadToBe(client, requestBuilder)
             }
         } catch (Throwable t) {
             ex = t
         }
         long endTime = System.currentTimeMillis()
-        log.info("Stream load elapsed ${endTime - startTime} ms".toString())
+
+        log.info("Stream load elapsed ${endTime - startTime} ms, is http stream: ${isHttpStream}, " +
+                " response: ${responseText}" + ex.toString())
         checkResult(responseText, ex, startTime, endTime)
     }
 
@@ -180,6 +208,33 @@ class StreamLoadAction implements SuiteAction {
         return requestBuilder
     }
 
+    private String cacheHttpFile(CloseableHttpClient client, String url) {
+        def relativePath = url.substring(url.indexOf('/', 9))
+        def file = new File("${context.config.cacheDataPath}/${relativePath}")
+        if (file.exists()) {
+            log.info("Found ${url} in ${file.getAbsolutePath()}");
+            return file.getAbsolutePath()
+        }
+        log.info("Start to cache data from ${url} to ${file.getAbsolutePath()}");
+        CloseableHttpResponse resp = client.execute(RequestBuilder.get(url).build())
+        int code = resp.getStatusLine().getStatusCode()
+        if (code != HttpStatus.SC_OK) {
+            String streamBody = EntityUtils.toString(resp.getEntity())
+            log.info("Fail to download data ${url}, code: ${code}, body:\n${streamBody}")
+            throw new IllegalStateException("Get http stream failed, status code is ${code}, body:\n${streamBody}")
+        }
+
+        file.getParentFile().mkdirs();
+        new File("${context.config.cacheDataPath}/tmp/").mkdir()
+        InputStream httpFileStream = resp.getEntity().getContent()
+        File tmpFile = File.createTempFile("cache", null, new File("${context.config.cacheDataPath}/tmp/"))
+
+        java.nio.file.Files.copy(httpFileStream, tmpFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        java.nio.file.Files.move(tmpFile.toPath(), file.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        log.info("Cached data from ${url} to ${file.getAbsolutePath()}");
+        return file.getAbsolutePath()
+    }
+
     private HttpEntity prepareHttpEntity(CloseableHttpClient client) {
         HttpEntity entity = null
         if (inputStream != null) {
@@ -194,19 +249,26 @@ class StreamLoadAction implements SuiteAction {
             String fileName = this.file
             if (fileName.startsWith("http://") || fileName.startsWith("https://")) {
                 log.info("Set stream load input: ${fileName}".toString())
-                entity = new InputStreamEntity(httpGetStream(client, fileName))
-            } else { // local file
-                if (!new File(fileName).isAbsolute()) {
-                    fileName = new File(context.dataPath, fileName).getAbsolutePath()
+                def file = new File(context.config.cacheDataPath)
+                file.mkdirs();
+
+                if (file.exists() && file.isDirectory() && context.config.enableCacheData) {
+                    fileName = cacheHttpFile(client, fileName)
+                } else {
+                    entity = new InputStreamEntity(httpGetStream(client, fileName))
+                    return entity;
                 }
-                def file = new File(fileName)
-                if (!file.exists()) {
-                    log.warn("Stream load input file not exists: ${file}".toString())
-                    throw new IllegalStateException("Stream load input file not exists: ${file}");
-                }
-                log.info("Set stream load input: ${file.canonicalPath}".toString())
-                entity = new FileEntity(file)
             }
+            if (!new File(fileName).isAbsolute()) {
+                fileName = new File(context.dataPath, fileName).getAbsolutePath()
+            }
+            def file = new File(fileName)
+            if (!file.exists()) {
+                log.warn("Stream load input file not exists: ${file}".toString())
+                throw new IllegalStateException("Stream load input file not exists: ${file}");
+            }
+            log.info("Set stream load input: ${file.canonicalPath}".toString())
+            entity = new FileEntity(file)
         }
         return entity
     }
@@ -229,10 +291,7 @@ class StreamLoadAction implements SuiteAction {
         return backendStreamLoadUri
     }
 
-    private String streamLoadToBe(CloseableHttpClient client, RequestBuilder requestBuilder, String beLocation, HttpEntity httpEntity) {
-        log.info("Redirect stream load to ${beLocation}".toString())
-        requestBuilder.setUri(beLocation)
-        requestBuilder.setEntity(httpEntity)
+    private String streamLoadToBe(CloseableHttpClient client, RequestBuilder requestBuilder) {
         String responseText
         try{
             client.execute(requestBuilder.build()).withCloseable { resp ->
@@ -253,6 +312,9 @@ class StreamLoadAction implements SuiteAction {
     }
 
     private void checkResult(String responseText, Throwable ex, long startTime, long endTime) {
+        String finalStatus = waitForPublishOrFailure(responseText)
+        log.info("The origin stream load result: ${responseText}, final status: ${finalStatus}")
+        responseText = responseText.replace("Publish Timeout", finalStatus)
         if (check != null) {
             check.call(responseText, ex, startTime, endTime)
         } else {
@@ -277,7 +339,6 @@ class StreamLoadAction implements SuiteAction {
             long numberLoadedRows = result.NumberLoadedRows.toLong()
             if (numberTotalRows != numberLoadedRows) {
                 throw new IllegalStateException("Stream load rows mismatch:\n${responseText}")
-
             }
 
             if (time > 0) {
@@ -288,6 +349,45 @@ class StreamLoadAction implements SuiteAction {
                     throw new IllegalStateException("Expect elapsed <= ${time}, but meet ${elapsed}")
                 }
             }
+        }
+    }
+
+    // Sometime the stream load may return "PUBLISH TIMEOUT"
+    // This is not a fatal error but may cause test fail.
+    // So here we wait for at most 60s, using "show transaction" to check the
+    // status of txn, and return once it become ABORTED or VISIBLE.
+    private String waitForPublishOrFailure(String responseText) {
+        try {
+            long maxWaitSecond = 60;
+            def jsonSlurper = new JsonSlurper()
+            def parsed = jsonSlurper.parseText(responseText)
+            String status = parsed.Status
+            long txnId = parsed.TxnId
+            if (!status.equalsIgnoreCase("Publish Timeout")) {
+                return status;
+            }
+
+            log.info("Stream load with txn ${txnId} is publish timeout")
+            String sql = "show transaction from ${db} where id = ${txnId}"
+            String st = "PREPARE"
+            while (!st.equalsIgnoreCase("VISIBLE") && !st.equalsIgnoreCase("ABORTED") && maxWaitSecond > 0) {
+                Thread.sleep(2000)
+                maxWaitSecond -= 2
+                def (result, meta) = JdbcUtils.executeToStringList(context.getConnection(), sql)
+                if (result.size() != 1) {
+                    throw new IllegalStateException("Failed to get txn's ${txnId}")
+                }
+                st = String.valueOf(result[0][3])
+            }
+            log.info("Stream load with txn ${txnId} is ${st}")
+            if (st.equalsIgnoreCase("VISIBLE")) {
+                return "Success";
+            } else {
+                return "Fail";
+            }
+        } catch (Throwable t) {
+            log.info("failed to waitForPublishOrFailure. response: ${responseText}", t);
+            throw t;
         }
     }
 }

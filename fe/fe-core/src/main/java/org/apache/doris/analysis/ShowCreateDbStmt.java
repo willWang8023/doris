@@ -17,17 +17,13 @@
 
 package org.apache.doris.analysis;
 
-import org.apache.doris.analysis.CompoundPredicate.Operator;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.ScalarType;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
-import org.apache.doris.mysql.privilege.PaloPrivilege;
-import org.apache.doris.mysql.privilege.PrivBitSet;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.ShowResultSetMetaData;
@@ -60,16 +56,11 @@ public class ShowCreateDbStmt extends ShowStmt {
         if (Strings.isNullOrEmpty(db)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_WRONG_DB_NAME, db);
         }
-        db = ClusterNamespace.getFullName(getClusterName(), db);
 
-        if (!Env.getCurrentEnv().getAuth().checkDbPriv(ConnectContext.get(), db,
-                                                               PrivPredicate.of(PrivBitSet.of(PaloPrivilege.ADMIN_PRIV,
-                                                                                              PaloPrivilege.ALTER_PRIV,
-                                                                                              PaloPrivilege.CREATE_PRIV,
-                                                                                              PaloPrivilege.DROP_PRIV),
-                                                                                Operator.OR))) {
+        if (!Env.getCurrentEnv().getAccessManager().checkDbPriv(ConnectContext.get(), db,
+                PrivPredicate.ALTER_CREATE_DROP)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_DBACCESS_DENIED_ERROR,
-                                                ConnectContext.get().getQualifiedUser(), db);
+                    ConnectContext.get().getQualifiedUser(), db);
         }
     }
 

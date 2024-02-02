@@ -23,6 +23,7 @@
 #include "vec/common/hash_table/hash_map.h"
 #include "vec/common/hash_table/string_hash_table.h"
 
+namespace doris {
 template <typename Key, typename TMapped>
 struct StringHashMapCell : public HashMapCell<Key, TMapped, StringHashTableHash, HashTableNoState> {
     using Base = HashMapCell<Key, TMapped, StringHashTableHash, HashTableNoState>;
@@ -30,7 +31,7 @@ struct StringHashMapCell : public HashMapCell<Key, TMapped, StringHashTableHash,
     using Base::Base;
     static constexpr bool need_zero_value_storage = false;
     // external
-    const StringRef get_key() const { return to_string_ref(this->value.first); } /// NOLINT
+    const doris::StringRef get_key() const { return to_string_ref(this->value.first); } /// NOLINT
     // internal
     static const Key& get_key(const value_type& value_) { return value_.first; }
 };
@@ -50,44 +51,24 @@ struct StringHashMapCell<StringKey16, TMapped>
     void set_zero() { this->value.first.high = 0; }
 
     // external
-    const StringRef get_key() const { return to_string_ref(this->value.first); } /// NOLINT
+    const doris::StringRef get_key() const { return to_string_ref(this->value.first); } /// NOLINT
     // internal
     static const StringKey16& get_key(const value_type& value_) { return value_.first; }
 };
 
 template <typename TMapped>
-struct StringHashMapCell<StringKey24, TMapped>
-        : public HashMapCell<StringKey24, TMapped, StringHashTableHash, HashTableNoState> {
-    using Base = HashMapCell<StringKey24, TMapped, StringHashTableHash, HashTableNoState>;
-    using value_type = typename Base::value_type;
-    using Base::Base;
-    static constexpr bool need_zero_value_storage = false;
-    bool is_zero(const HashTableNoState& state) const { return is_zero(this->value.first, state); }
-
-    // Zero means unoccupied cells in hash table. Use key with last word = 0 as
-    // zero keys, because such keys are unrepresentable (no way to encode length).
-    static bool is_zero(const StringKey24& key, const HashTableNoState&) { return key.c == 0; }
-    void set_zero() { this->value.first.c = 0; }
-
-    // external
-    const StringRef get_key() const { return to_string_ref(this->value.first); } /// NOLINT
-    // internal
-    static const StringKey24& get_key(const value_type& value_) { return value_.first; }
-};
-
-template <typename TMapped>
-struct StringHashMapCell<StringRef, TMapped>
-        : public HashMapCellWithSavedHash<StringRef, TMapped, StringHashTableHash,
+struct StringHashMapCell<doris::StringRef, TMapped>
+        : public HashMapCellWithSavedHash<doris::StringRef, TMapped, StringHashTableHash,
                                           HashTableNoState> {
-    using Base =
-            HashMapCellWithSavedHash<StringRef, TMapped, StringHashTableHash, HashTableNoState>;
+    using Base = HashMapCellWithSavedHash<doris::StringRef, TMapped, StringHashTableHash,
+                                          HashTableNoState>;
     using value_type = typename Base::value_type;
     using Base::Base;
     static constexpr bool need_zero_value_storage = false;
     // external
     using Base::get_key;
     // internal
-    static const StringRef& get_key(const value_type& value_) { return value_.first; }
+    static const doris::StringRef& get_key(const value_type& value_) { return value_.first; }
 
     template <typename Key>
     StringHashMapCell(const StringHashMapCell<Key, TMapped>& other) {
@@ -107,105 +88,69 @@ struct StringHashMapCell<StringRef, TMapped>
 
 template <typename TMapped, typename Allocator>
 struct StringHashMapSubMaps {
-    using T0 = StringHashTableEmpty<StringHashMapCell<StringRef, TMapped>>;
-    using T1 = HashMapTable<StringKey8, StringHashMapCell<StringKey8, TMapped>, StringHashTableHash,
-                            StringHashTableGrower<>, Allocator>;
-    using T2 = HashMapTable<StringKey16, StringHashMapCell<StringKey16, TMapped>,
+    using T0 = StringHashTableEmpty<StringHashMapCell<doris::StringRef, TMapped>>;
+    using T1 = HashMapTable<StringHashMapSubKeys::T1,
+                            StringHashMapCell<StringHashMapSubKeys::T1, TMapped>,
+                            StringHashTableHash, StringHashTableGrower<4>, Allocator>;
+    using T2 = HashMapTable<StringHashMapSubKeys::T2,
+                            StringHashMapCell<StringHashMapSubKeys::T2, TMapped>,
                             StringHashTableHash, StringHashTableGrower<>, Allocator>;
-    using T3 = HashMapTable<StringKey24, StringHashMapCell<StringKey24, TMapped>,
+    using T3 = HashMapTable<StringHashMapSubKeys::T3,
+                            StringHashMapCell<StringHashMapSubKeys::T3, TMapped>,
                             StringHashTableHash, StringHashTableGrower<>, Allocator>;
-    using Ts = HashMapTable<StringRef, StringHashMapCell<StringRef, TMapped>, StringHashTableHash,
-                            StringHashTableGrower<>, Allocator>;
+    using T4 = HashMapTable<StringHashMapSubKeys::T4,
+                            StringHashMapCell<StringHashMapSubKeys::T4, TMapped>,
+                            StringHashTableHash, StringHashTableGrower<>, Allocator>;
+    using Ts = HashMapTable<doris::StringRef, StringHashMapCell<doris::StringRef, TMapped>,
+                            StringHashTableHash, StringHashTableGrower<>, Allocator>;
 };
 
 template <typename TMapped, typename Allocator = HashTableAllocator>
 class StringHashMap : public StringHashTable<StringHashMapSubMaps<TMapped, Allocator>> {
 public:
-    using Key = StringRef;
+    using Key = doris::StringRef;
     using Base = StringHashTable<StringHashMapSubMaps<TMapped, Allocator>>;
     using Self = StringHashMap;
     using LookupResult = typename Base::LookupResult;
 
     using Base::Base;
 
-    /// Merge every cell's value of current map into the destination map.
-    ///  Func should have signature void(Mapped & dst, Mapped & src, bool emplaced).
-    ///  Each filled cell in current map will invoke func once. If that map doesn't
-    ///  have a key equals to the given cell, a new cell gets emplaced into that map,
-    ///  and func is invoked with the third argument emplaced set to true. Otherwise
-    ///  emplaced is set to false.
-    template <typename Func>
-    void ALWAYS_INLINE merge_to_via_emplace(Self& that, Func&& func) {
-        if (this->m0.hasZero() && that.m0.hasZero())
-            func(that.m0.zero_value()->get_mapped(), this->m0.zero_value()->get_mapped(), false);
-        else if (this->m0.hasZero()) {
-            that.m0.setHasZero();
-            func(that.m0.zero_value()->get_mapped(), this->m0.zero_value()->get_mapped(), true);
-        }
-        this->m1.merge_to_via_emplace(that.m1, func);
-        this->m2.merge_to_via_emplace(that.m2, func);
-        this->m3.merge_to_via_emplace(that.m3, func);
-        this->ms.merge_to_via_emplace(that.ms, func);
-    }
-
-    /// Merge every cell's value of current map into the destination map via find.
-    ///  Func should have signature void(Mapped & dst, Mapped & src, bool exist).
-    ///  Each filled cell in current map will invoke func once. If that map doesn't
-    ///  have a key equals to the given cell, func is invoked with the third argument
-    ///  exist set to false. Otherwise exist is set to true.
-    template <typename Func>
-    void ALWAYS_INLINE merge_to_via_find(Self& that, Func&& func) {
-        if (this->m0.size() && that.m0.size())
-            func(that.m0.zero_value()->get_mapped(), this->m0.zero_value()->get_mapped(), true);
-        else if (this->m0.size())
-            func(this->m0.zero_value()->get_mapped(), this->m0.zero_value()->get_mapped(), false);
-        this->m1.merge_to_via_find(that.m1, func);
-        this->m2.merge_to_via_find(that.m2, func);
-        this->m3.merge_to_via_find(that.m3, func);
-        this->ms.merge_to_via_find(that.ms, func);
-    }
-
     TMapped& ALWAYS_INLINE operator[](const Key& x) {
         LookupResult it;
         bool inserted;
         this->emplace(x, it, inserted);
-        if (inserted) new (&it->get_mapped()) TMapped();
+        if (inserted) {
+            new (&it->get_mapped()) TMapped();
+        }
 
         return it->get_mapped();
     }
 
     template <typename Func>
-    void ALWAYS_INLINE for_each_value(Func&& func) {
-        if (this->m0.size()) {
-            func(StringRef {}, this->m0.zero_value()->get_second());
-        }
-
-        for (auto& v : this->m1) {
-            func(v.get_key(), v.get_second());
-        }
-
-        for (auto& v : this->m2) {
-            func(v.get_key(), v.get_second());
-        }
-
-        for (auto& v : this->m3) {
-            func(v.get_key(), v.get_second());
-        }
-
-        for (auto& v : this->ms) {
-            func(v.get_key(), v.get_second());
-        }
-    }
-
-    template <typename Func>
     void ALWAYS_INLINE for_each_mapped(Func&& func) {
-        if (this->m0.size()) func(this->m0.zero_value()->get_second());
-        for (auto& v : this->m1) func(v.get_second());
-        for (auto& v : this->m2) func(v.get_second());
-        for (auto& v : this->m3) func(v.get_second());
-        for (auto& v : this->ms) func(v.get_second());
+        if (this->m0.size()) {
+            func(this->m0.zero_value()->get_second());
+        }
+        for (auto& v : this->m1) {
+            func(v.get_second());
+        }
+        for (auto& v : this->m2) {
+            func(v.get_second());
+        }
+        for (auto& v : this->m3) {
+            func(v.get_second());
+        }
+        for (auto& v : this->m4) {
+            func(v.get_second());
+        }
+        for (auto& v : this->ms) {
+            func(v.get_second());
+        }
     }
-
-    char* get_null_key_data() { return nullptr; }
+    template <typename MappedType>
+    char* get_null_key_data() {
+        return nullptr;
+    }
     bool has_null_key_data() const { return false; }
 };
+} // namespace doris

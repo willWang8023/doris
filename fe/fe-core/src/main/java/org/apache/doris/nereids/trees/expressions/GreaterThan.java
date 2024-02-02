@@ -18,24 +18,38 @@
 package org.apache.doris.nereids.trees.expressions;
 
 import org.apache.doris.nereids.exceptions.UnboundException;
+import org.apache.doris.nereids.trees.expressions.functions.PropagateNullable;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 
 /**
  * Greater than expression: a > b.
  */
-public class GreaterThan extends ComparisonPredicate {
+public class GreaterThan extends ComparisonPredicate implements PropagateNullable {
     /**
      * Constructor of Greater Than ComparisonPredicate.
      *
-     * @param left  left child of greater than
+     * @param left left child of greater than
      * @param right right child of greater than
      */
     public GreaterThan(Expression left, Expression right) {
-        super(left, right, ">");
+        this(left, right, false);
+    }
+
+    public GreaterThan(Expression left, Expression right, boolean inferred) {
+        super(ImmutableList.of(left, right), ">", inferred);
+    }
+
+    private GreaterThan(List<Expression> children) {
+        this(children, false);
+    }
+
+    private GreaterThan(List<Expression> children, boolean inferred) {
+        super(children, ">", inferred);
     }
 
     @Override
@@ -51,7 +65,12 @@ public class GreaterThan extends ComparisonPredicate {
     @Override
     public GreaterThan withChildren(List<Expression> children) {
         Preconditions.checkArgument(children.size() == 2);
-        return new GreaterThan(children.get(0), children.get(1));
+        return new GreaterThan(children, this.isInferred());
+    }
+
+    @Override
+    public Expression withInferred(boolean inferred) {
+        return new GreaterThan(this.children, inferred);
     }
 
     @Override

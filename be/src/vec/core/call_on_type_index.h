@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "vec/core/types.h"
+#include "vec/data_types/data_type_time.h"
 
 namespace doris::vectorized {
 
@@ -67,8 +68,12 @@ bool call_on_basic_type(TypeIndex number, F&& f) {
             return f(TypePair<T, Decimal32>());
         case TypeIndex::Decimal64:
             return f(TypePair<T, Decimal64>());
-        case TypeIndex::Decimal128:
-            return f(TypePair<T, Decimal128>());
+        case TypeIndex::Decimal128V2:
+            return f(TypePair<T, Decimal128V2>());
+        case TypeIndex::Decimal128V3:
+            return f(TypePair<T, Decimal128V3>());
+        case TypeIndex::Decimal256:
+            return f(TypePair<T, Decimal256>());
         default:
             break;
         }
@@ -90,7 +95,7 @@ bool call_on_basic_type(TypeIndex number, F&& f) {
 
 /// Unroll template using TypeIndex
 template <bool _int, bool _float, bool _decimal, bool _datetime, typename F>
-inline bool call_on_basic_types(TypeIndex type_num1, TypeIndex type_num2, F&& f) {
+bool call_on_basic_types(TypeIndex type_num1, TypeIndex type_num2, F&& f) {
     if constexpr (_int) {
         switch (type_num1) {
         case TypeIndex::UInt8:
@@ -134,8 +139,14 @@ inline bool call_on_basic_types(TypeIndex type_num1, TypeIndex type_num2, F&& f)
         case TypeIndex::Decimal64:
             return call_on_basic_type<Decimal64, _int, _float, _decimal, _datetime>(
                     type_num2, std::forward<F>(f));
-        case TypeIndex::Decimal128:
-            return call_on_basic_type<Decimal128, _int, _float, _decimal, _datetime>(
+        case TypeIndex::Decimal128V2:
+            return call_on_basic_type<Decimal128V2, _int, _float, _decimal, _datetime>(
+                    type_num2, std::forward<F>(f));
+        case TypeIndex::Decimal128V3:
+            return call_on_basic_type<Decimal128V3, _int, _float, _decimal, _datetime>(
+                    type_num2, std::forward<F>(f));
+        case TypeIndex::Decimal256:
+            return call_on_basic_type<Decimal256, _int, _float, _decimal, _datetime>(
                     type_num2, std::forward<F>(f));
         default:
             break;
@@ -162,6 +173,8 @@ class DataTypeDate;
 class DataTypeDateV2;
 class DataTypeDateTimeV2;
 class DataTypeDateTime;
+class DataTypeIPv4;
+class DataTypeIPv6;
 class DataTypeString;
 template <typename T>
 class DataTypeEnum;
@@ -197,13 +210,20 @@ bool call_on_index_and_data_type(TypeIndex number, F&& f) {
         return f(TypePair<DataTypeNumber<Float32>, T>());
     case TypeIndex::Float64:
         return f(TypePair<DataTypeNumber<Float64>, T>());
-
+    case TypeIndex::Time:
+        return f(TypePair<DataTypeTimeV2, T>());
+    case TypeIndex::TimeV2:
+        return f(TypePair<DataTypeTimeV2, T>());
     case TypeIndex::Decimal32:
         return f(TypePair<DataTypeDecimal<Decimal32>, T>());
     case TypeIndex::Decimal64:
         return f(TypePair<DataTypeDecimal<Decimal64>, T>());
-    case TypeIndex::Decimal128:
-        return f(TypePair<DataTypeDecimal<Decimal128>, T>());
+    case TypeIndex::Decimal128V2:
+        return f(TypePair<DataTypeDecimal<Decimal128V2>, T>());
+    case TypeIndex::Decimal128V3:
+        return f(TypePair<DataTypeDecimal<Decimal128V3>, T>());
+    case TypeIndex::Decimal256:
+        return f(TypePair<DataTypeDecimal<Decimal256>, T>());
 
     case TypeIndex::Date:
         return f(TypePair<DataTypeDate, T>());
@@ -213,6 +233,11 @@ bool call_on_index_and_data_type(TypeIndex number, F&& f) {
         return f(TypePair<DataTypeDateTimeV2, T>());
     case TypeIndex::DateTime:
         return f(TypePair<DataTypeDateTime, T>());
+
+    case TypeIndex::IPv4:
+        return f(TypePair<DataTypeIPv4, T>());
+    case TypeIndex::IPv6:
+        return f(TypePair<DataTypeIPv6, T>());
 
     case TypeIndex::String:
         return f(TypePair<DataTypeString, T>());
@@ -255,8 +280,12 @@ bool call_on_index_and_number_data_type(TypeIndex number, F&& f) {
         return f(TypePair<DataTypeDecimal<Decimal32>, T>());
     case TypeIndex::Decimal64:
         return f(TypePair<DataTypeDecimal<Decimal64>, T>());
-    case TypeIndex::Decimal128:
-        return f(TypePair<DataTypeDecimal<Decimal128>, T>());
+    case TypeIndex::Decimal128V2:
+        return f(TypePair<DataTypeDecimal<Decimal128V2>, T>());
+    case TypeIndex::Decimal128V3:
+        return f(TypePair<DataTypeDecimal<Decimal128V3>, T>());
+    case TypeIndex::Decimal256:
+        return f(TypePair<DataTypeDecimal<Decimal256>, T>());
     default:
         break;
     }

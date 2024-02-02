@@ -17,7 +17,12 @@
 
 #include "olap/short_key_index.h"
 
-#include <gtest/gtest.h>
+#include <gtest/gtest-message.h>
+#include <gtest/gtest-test-part.h>
+
+#include <string>
+
+#include "gtest/gtest_pred_impl.h"
 
 namespace doris {
 
@@ -32,7 +37,7 @@ TEST_F(ShortKeyIndexTest, builder) {
 
     int num_items = 0;
     for (int i = 1000; i < 10000; i += 2) {
-        builder.add_item(std::to_string(i));
+        static_cast<void>(builder.add_item(std::to_string(i)));
         num_items++;
     }
     std::vector<Slice> slices;

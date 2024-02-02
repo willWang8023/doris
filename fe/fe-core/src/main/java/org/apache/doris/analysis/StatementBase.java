@@ -22,22 +22,18 @@ package org.apache.doris.analysis;
 
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
-import org.apache.doris.common.ErrorCode;
-import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
 import org.apache.doris.qe.OriginStatement;
 import org.apache.doris.rewrite.ExprRewriter;
+import org.apache.doris.thrift.TQueryOptions;
 
 import com.google.common.base.Preconditions;
-import com.google.common.base.Strings;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 public abstract class StatementBase implements ParseNode {
-
-    private String clusterName;
-
     // Set this variable if this QueryStmt is the top level query from an EXPLAIN <query>
     protected ExplainOptions explainOptions = null;
 
@@ -53,6 +49,12 @@ public abstract class StatementBase implements ParseNode {
     private OriginStatement origStmt;
 
     private UserIdentity userInfo;
+
+    private boolean isPrepared = false;
+
+    // select * from tbl where a = ? and b = ?
+    // `?` is the placeholder
+    private ArrayList<PlaceHolderExpr> placeholders = new ArrayList<>();
 
     protected StatementBase() { }
 
@@ -70,16 +72,20 @@ public abstract class StatementBase implements ParseNode {
      * were missing from the catalog.
      * It is up to the analysis() implementation to ensure the maximum number of missing
      * tables/views get collected in the Analyzer before failing analyze().
+     * Should call the method firstly when override the method, the analyzer param should be
+     * the one which statement would use.
      */
     public void analyze(Analyzer analyzer) throws AnalysisException, UserException {
         if (isAnalyzed()) {
             return;
         }
         this.analyzer = analyzer;
-        if (Strings.isNullOrEmpty(analyzer.getClusterName())) {
-            ErrorReport.reportAnalysisException(ErrorCode.ERR_CLUSTER_NO_SELECT_CLUSTER);
+        if (analyzer.getRootStatementClazz() == null) {
+            analyzer.setRootStatementClazz(this.getClass());
         }
-        this.clusterName = analyzer.getClusterName();
+    }
+
+    public void checkPriv() throws AnalysisException {
     }
 
     public Analyzer getAnalyzer() {
@@ -98,12 +104,28 @@ public abstract class StatementBase implements ParseNode {
         return this.explainOptions != null;
     }
 
+    public void setPlaceHolders(ArrayList<PlaceHolderExpr> placeholders) {
+        this.placeholders = new ArrayList<PlaceHolderExpr>(placeholders);
+    }
+
+    public ArrayList<PlaceHolderExpr> getPlaceHolders() {
+        return this.placeholders;
+    }
+
     public boolean isVerbose() {
         return explainOptions != null && explainOptions.isVerbose();
     }
 
     public ExplainOptions getExplainOptions() {
         return explainOptions;
+    }
+
+    public void setIsPrepared() {
+        this.isPrepared = true;
+    }
+
+    public boolean isPrepared() {
+        return this.isPrepared;
     }
 
     /*
@@ -187,17 +209,19 @@ public abstract class StatementBase implements ParseNode {
      * @throws AnalysisException
      * @param rewriter
      */
-    public void foldConstant(ExprRewriter rewriter) throws AnalysisException {
+    public void foldConstant(ExprRewriter rewriter, TQueryOptions tQueryOptions) throws AnalysisException {
         throw new IllegalStateException(
                 "foldConstant() not implemented for this stmt: " + getClass().getSimpleName());
     }
 
-    public String getClusterName() {
-        return clusterName;
-    }
-
-    public void setClusterName(String clusterName) {
-        this.clusterName = clusterName;
+    /**
+     * rewrite element_at to slot in statement
+     * @throws AnalysisException
+     * @param rewriter
+     */
+    public void rewriteElementAtToSlot(ExprRewriter rewriter, TQueryOptions tQueryOptions) throws AnalysisException {
+        throw new IllegalStateException(
+                "rewriteElementAtToSlot() not implemented for this stmt: " + getClass().getSimpleName());
     }
 
     public void setOrigStmt(OriginStatement origStmt) {

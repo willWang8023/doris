@@ -21,12 +21,14 @@ import org.apache.doris.catalog.ArrayType;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.Type;
+import org.apache.doris.catalog.external.HMSExternalTable;
 import org.apache.doris.common.AnalysisException;
-import org.apache.doris.common.Config;
 import org.apache.doris.common.UserException;
+import org.apache.doris.fs.remote.BrokerFileSystem;
+import org.apache.doris.fs.remote.RemoteFileSystem;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat;
 import org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat;
@@ -42,6 +44,9 @@ import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -56,17 +61,15 @@ public final class HiveUtil {
     /**
      * get input format class from inputFormatName.
      *
-     * @param configuration jobConf used when getInputFormatClass
+     * @param jobConf jobConf used when getInputFormatClass
      * @param inputFormatName inputFormat class name
      * @param symlinkTarget use target inputFormat class when inputFormat is SymlinkTextInputFormat
      * @return a class of inputFormat.
-     * @throws UserException  when class not found.
+     * @throws UserException when class not found.
      */
-    public static InputFormat<?, ?> getInputFormat(Configuration configuration,
-                                                   String inputFormatName, boolean symlinkTarget) throws UserException {
+    public static InputFormat<?, ?> getInputFormat(JobConf jobConf,
+            String inputFormatName, boolean symlinkTarget) throws UserException {
         try {
-            JobConf jobConf = new JobConf(configuration);
-
             Class<? extends InputFormat<?, ?>> inputFormatClass = getInputFormatClass(jobConf, inputFormatName);
             if (symlinkTarget && (inputFormatClass == SymlinkTextInputFormat.class)) {
                 // symlink targets are always TextInputFormat
@@ -126,7 +129,6 @@ public final class HiveUtil {
     }
 
     private static Type convertHiveTypeToiveDoris(TypeInfo hiveTypeInfo) {
-
         switch (hiveTypeInfo.getCategory()) {
             case PRIMITIVE: {
                 PrimitiveTypeInfo primitiveTypeInfo = (PrimitiveTypeInfo) hiveTypeInfo;
@@ -158,7 +160,7 @@ public final class HiveUtil {
                     case TIMESTAMP:
                         return ScalarType.getDefaultDateType(Type.DATETIME);
                     case DECIMAL:
-                        return Config.enable_decimalv3 ? Type.DECIMAL128 : Type.DECIMALV2;
+                        return Type.DECIMALV2;
                     default:
                         throw new UnsupportedOperationException("Unsupported type: "
                             + primitiveTypeInfo.getPrimitiveCategory());
@@ -182,4 +184,25 @@ public final class HiveUtil {
         }
     }
 
+    public static boolean isSplittable(RemoteFileSystem remoteFileSystem, String inputFormat,
+            String location, JobConf jobConf) throws UserException {
+        if (remoteFileSystem instanceof BrokerFileSystem) {
+            return ((BrokerFileSystem) remoteFileSystem).isSplittable(location, inputFormat);
+        }
+
+        // All supported hive input format are splittable
+        return HMSExternalTable.SUPPORTED_HIVE_FILE_FORMATS.contains(inputFormat);
+    }
+
+    public static String getHivePartitionValue(String part) {
+        String[] kv = part.split("=");
+        Preconditions.checkState(kv.length == 2, String.format("Malformed partition name %s", part));
+        try {
+            // hive partition value maybe contains special characters like '=' and '/'
+            return URLDecoder.decode(kv[1], StandardCharsets.UTF_8.name());
+        } catch (UnsupportedEncodingException e) {
+            // It should not be here
+            throw new RuntimeException(e);
+        }
+    }
 }

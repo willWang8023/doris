@@ -43,6 +43,7 @@ public final class ExprSubstitutionMap {
     private static final Logger LOG = LogManager.getLogger(ExprSubstitutionMap.class);
 
     private boolean checkAnalyzed = true;
+    private boolean useNotCheckDescIdEquals = false;
     private List<Expr> lhs; // left-hand side
     private List<Expr> rhs; // right-hand side
 
@@ -61,6 +62,10 @@ public final class ExprSubstitutionMap {
         this.rhs = rhs;
     }
 
+    public void useNotCheckDescIdEquals() {
+        useNotCheckDescIdEquals = true;
+    }
+
     /**
      * Add an expr mapping. The rhsExpr must be analyzed to support correct substitution
      * across query blocks. It is not required that the lhsExpr is analyzed.
@@ -72,13 +77,24 @@ public final class ExprSubstitutionMap {
         rhs.add(rhsExpr);
     }
 
+    public void putNoAnalyze(Expr lhsExpr, Expr rhsExpr) {
+        lhs.add(lhsExpr);
+        rhs.add(rhsExpr);
+    }
+
     /**
      * Returns the expr mapped to lhsExpr or null if no mapping to lhsExpr exists.
      */
     public Expr get(Expr lhsExpr) {
         for (int i = 0; i < lhs.size(); ++i) {
-            if (lhsExpr.equals(lhs.get(i))) {
-                return rhs.get(i);
+            if (useNotCheckDescIdEquals) {
+                if (lhsExpr.notCheckDescIdEquals(lhs.get(i))) {
+                    return rhs.get(i);
+                }
+            } else {
+                if (lhsExpr.equals(lhs.get(i))) {
+                    return rhs.get(i);
+                }
             }
         }
         return null;
@@ -103,6 +119,16 @@ public final class ExprSubstitutionMap {
         return null;
     }
 
+    public void removeByLhsExpr(Expr lhsExpr) {
+        for (int i = 0; i < lhs.size(); ++i) {
+            if (lhs.get(i).equals(lhsExpr)) {
+                lhs.remove(i);
+                rhs.remove(i);
+                break;
+            }
+        }
+    }
+
     public void removeByRhsExpr(Expr rhsExpr) {
         for (int i = 0; i < rhs.size(); ++i) {
             if (rhs.get(i).equals(rhsExpr)) {
@@ -117,6 +143,10 @@ public final class ExprSubstitutionMap {
         lhs = lhsExprList;
     }
 
+    public void updateRhsExprs(List<Expr> rhsExprList) {
+        rhs = rhsExprList;
+    }
+
     /**
      * Return a map  which is equivalent to applying f followed by g,
      * i.e., g(f()).
@@ -129,13 +159,13 @@ public final class ExprSubstitutionMap {
         if (f == null) {
             return g;
         }
-        if (g == null) {
+        if (g == null || g.size() == 0) {
             return f;
         }
         ExprSubstitutionMap result = new ExprSubstitutionMap();
         // f's substitution targets need to be substituted via g
         result.lhs = Expr.cloneList(f.lhs);
-        result.rhs = Expr.substituteList(f.rhs, g, analyzer, false);
+        result.rhs = Expr.substituteList(f.rhs, g, analyzer, true);
 
         // substitution maps are cumulative: the combined map contains all
         // substitutions from f and g.
@@ -205,7 +235,7 @@ public final class ExprSubstitutionMap {
         if (f == null) {
             return g;
         }
-        if (g == null) {
+        if (g == null || g.size() == 0) {
             return f;
         }
         ExprSubstitutionMap result = new ExprSubstitutionMap();
@@ -321,4 +351,15 @@ public final class ExprSubstitutionMap {
     public ExprSubstitutionMap clone() {
         return new ExprSubstitutionMap(Expr.cloneList(lhs), Expr.cloneList(rhs));
     }
+
+    public void reCalculateNullableInfoForSlotInRhs() {
+        Preconditions.checkState(lhs.size() == rhs.size(), "lhs and rhs must be same size");
+        for (int i = 0; i < rhs.size(); i++) {
+            if (rhs.get(i) instanceof SlotRef) {
+                ((SlotRef) rhs.get(i)).getDesc().setIsNullable(lhs.get(i).isNullable()
+                        || ((SlotRef) rhs.get(i)).getDesc().getIsNullable());
+            }
+        }
+    }
 }
+

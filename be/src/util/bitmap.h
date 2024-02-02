@@ -20,6 +20,15 @@
 
 #pragma once
 
+#include <glog/logging.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include "gutil/port.h"
 #include "gutil/strings/fastmem.h"
 #include "util/bit_util.h"
 
@@ -178,7 +187,7 @@ private:
 private:
     size_t offset_;
     size_t num_bits_;
-    const uint8_t* map_;
+    const uint8_t* map_ = nullptr;
 };
 
 /// Bitmap vector utility class.

@@ -17,14 +17,17 @@
 
 #pragma once
 
+#include <gen_cpp/Types_types.h>
+#include <stdint.h>
+
 #include <memory>
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <utility>
 
 #include "common/global_types.h"
 #include "common/status.h"
-#include "gen_cpp/Types_types.h"
 
 namespace google {
 namespace protobuf {
@@ -35,9 +38,7 @@ class Closure;
 namespace doris {
 class RuntimeState;
 class RowDescriptor;
-class TUniqueId;
 class RuntimeProfile;
-class QueryStatisticsRecvr;
 class PTransmitDataParams;
 
 namespace vectorized {
@@ -48,11 +49,11 @@ public:
     VDataStreamMgr();
     ~VDataStreamMgr();
 
-    std::shared_ptr<VDataStreamRecvr> create_recvr(
-            RuntimeState* state, const RowDescriptor& row_desc,
-            const TUniqueId& fragment_instance_id, PlanNodeId dest_node_id, int num_senders,
-            int buffer_size, RuntimeProfile* profile, bool is_merging,
-            std::shared_ptr<QueryStatisticsRecvr> sub_plan_query_statistics_recvr);
+    std::shared_ptr<VDataStreamRecvr> create_recvr(RuntimeState* state,
+                                                   const RowDescriptor& row_desc,
+                                                   const TUniqueId& fragment_instance_id,
+                                                   PlanNodeId dest_node_id, int num_senders,
+                                                   RuntimeProfile* profile, bool is_merging);
 
     std::shared_ptr<VDataStreamRecvr> find_recvr(const TUniqueId& fragment_instance_id,
                                                  PlanNodeId node_id, bool acquire_lock = true);
@@ -61,7 +62,7 @@ public:
 
     Status transmit_block(const PTransmitDataParams* request, ::google::protobuf::Closure** done);
 
-    void cancel(const TUniqueId& fragment_instance_id);
+    void cancel(const TUniqueId& fragment_instance_id, Status exec_status);
 
 private:
     std::mutex _lock;

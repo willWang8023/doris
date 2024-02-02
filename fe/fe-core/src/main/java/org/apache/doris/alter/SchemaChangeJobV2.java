@@ -22,6 +22,7 @@ import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.SlotDescriptor;
 import org.apache.doris.analysis.SlotRef;
 import org.apache.doris.analysis.TupleDescriptor;
+import org.apache.doris.catalog.BinlogConfig;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Database;
 import org.apache.doris.catalog.Env;
@@ -45,6 +46,7 @@ import org.apache.doris.common.MarkedCountDownLatch;
 import org.apache.doris.common.MetaNotFoundException;
 import org.apache.doris.common.SchemaVersionAndHash;
 import org.apache.doris.common.io.Text;
+import org.apache.doris.common.util.DbUtil;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.task.AgentBatchTask;
@@ -53,6 +55,7 @@ import org.apache.doris.task.AgentTaskExecutor;
 import org.apache.doris.task.AgentTaskQueue;
 import org.apache.doris.task.AlterReplicaTask;
 import org.apache.doris.task.CreateReplicaTask;
+import org.apache.doris.thrift.TColumn;
 import org.apache.doris.thrift.TStorageFormat;
 import org.apache.doris.thrift.TStorageMedium;
 import org.apache.doris.thrift.TStorageType;
@@ -73,9 +76,9 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /*
  * Version 2 of SchemaChangeJob.
@@ -94,6 +97,9 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
     // shadow index id -> origin index id
     @SerializedName(value = "indexIdMap")
     private Map<Long, Long> indexIdMap = Maps.newHashMap();
+    // partition id -> origin index id
+    @SerializedName(value = "partitionOriginIndexIdMap")
+    private Map<Long, Long> partitionOriginIndexIdMap = Maps.newHashMap();
     // shadow index id -> shadow index name(__doris_shadow_xxx)
     @SerializedName(value = "indexIdToName")
     private Map<Long, String> indexIdToName = Maps.newHashMap();
@@ -121,9 +127,6 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
     @SerializedName(value = "indexes")
     private List<Index> indexes = null;
 
-    // The schema change job will wait all transactions before this txn id finished, then send the schema change tasks.
-    @SerializedName(value = "watershedTxnId")
-    protected long watershedTxnId = -1;
     @SerializedName(value = "storageFormat")
     private TStorageFormat storageFormat = TStorageFormat.DEFAULT;
 
@@ -136,8 +139,8 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         super(JobType.SCHEMA_CHANGE);
     }
 
-    public SchemaChangeJobV2(long jobId, long dbId, long tableId, String tableName, long timeoutMs) {
-        super(jobId, JobType.SCHEMA_CHANGE, dbId, tableId, tableName, timeoutMs);
+    public SchemaChangeJobV2(String rawSql, long jobId, long dbId, long tableId, String tableName, long timeoutMs) {
+        super(rawSql, jobId, JobType.SCHEMA_CHANGE, dbId, tableId, tableName, timeoutMs);
     }
 
     public void addTabletIdMap(long partitionId, long shadowIdxId, long shadowTabletId, long originTabletId) {
@@ -151,6 +154,10 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
 
     public void addPartitionShadowIndex(long partitionId, long shadowIdxId, MaterializedIndex shadowIdx) {
         partitionIndexMap.put(partitionId, shadowIdxId, shadowIdx);
+    }
+
+    public void addPartitionOriginIndexIdMap(long partitionId, long originIdxId) {
+        partitionOriginIndexIdMap.put(partitionId, originIdxId);
     }
 
     public void addIndexSchema(long shadowIdxId, long originIdxId,
@@ -187,6 +194,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         partitionIndexMap.clear();
         indexSchemaMap.clear();
         indexShortKeyMap.clear();
+        partitionOriginIndexIdMap.clear();
     }
 
     /**
@@ -197,7 +205,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
      * 3. Get a new transaction id, then set job's state to WAITING_TXN
      */
     @Override
-    protected void runPendingJob() throws AlterCancelException {
+    protected void runPendingJob() throws Exception {
         Preconditions.checkState(jobState == JobState.PENDING, jobState);
         LOG.info("begin to send create replica tasks. job: {}", jobId);
         Database db = Env.getCurrentInternalCatalog()
@@ -227,8 +235,8 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
 
         tbl.readLock();
         try {
-
             Preconditions.checkState(tbl.getState() == OlapTableState.SCHEMA_CHANGE);
+            BinlogConfig binlogConfig = new BinlogConfig(tbl.getBinlogConfig());
             for (long partitionId : partitionIndexMap.rowKeySet()) {
                 Partition partition = tbl.getPartition(partitionId);
                 if (partition == null) {
@@ -266,7 +274,16 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                                     null,
                                     tbl.getCompressionType(),
                                     tbl.getEnableUniqueKeyMergeOnWrite(), tbl.getStoragePolicy(),
-                                    tbl.disableAutoCompaction());
+                                    tbl.disableAutoCompaction(),
+                                    tbl.enableSingleReplicaCompaction(),
+                                    tbl.skipWriteIndexOnLoad(),
+                                    tbl.getCompactionPolicy(),
+                                    tbl.getTimeSeriesCompactionGoalSizeMbytes(),
+                                    tbl.getTimeSeriesCompactionFileCountThreshold(),
+                                    tbl.getTimeSeriesCompactionTimeThresholdSeconds(),
+                                    tbl.getTimeSeriesCompactionEmptyRowsetsThreshold(),
+                                    tbl.storeRowColumn(),
+                                    binlogConfig);
 
                             createReplicaTask.setBaseTablet(partitionIndexTabletMap.get(partitionId, shadowIdxId)
                                     .get(shadowTabletId), originSchemaHash);
@@ -287,8 +304,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
             // send all tasks and wait them finished
             AgentTaskQueue.addBatchTask(batchTask);
             AgentTaskExecutor.submit(batchTask);
-            long timeout = Math.min(Config.tablet_create_timeout_second * 1000L * totalReplicaNum,
-                    Config.max_create_table_timeout_second * 1000L);
+            long timeout = DbUtil.getCreateReplicasTimeoutMs(totalReplicaNum);
             boolean ok = false;
             try {
                 ok = countDownLatch.await(timeout, TimeUnit.MILLISECONDS);
@@ -305,9 +321,10 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                 if (!countDownLatch.getStatus().ok()) {
                     errMsg = countDownLatch.getStatus().getErrorMsg();
                 } else {
-                    List<Entry<Long, Long>> unfinishedMarks = countDownLatch.getLeftMarks();
                     // only show at most 3 results
-                    List<Entry<Long, Long>> subList = unfinishedMarks.subList(0, Math.min(unfinishedMarks.size(), 3));
+                    List<String> subList = countDownLatch.getLeftMarks().stream().limit(3)
+                            .map(item -> "(backendId = " + item.getKey() + ", tabletId = " + item.getValue() + ")")
+                            .collect(Collectors.toList());
                     errMsg = "Error replicas:" + Joiner.on(", ").join(subList);
                 }
                 LOG.warn("failed to create replicas for job: {}, {}", jobId, errMsg);
@@ -325,8 +342,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
             tbl.writeUnlock();
         }
 
-        this.watershedTxnId = Env.getCurrentGlobalTransactionMgr()
-                .getTransactionIDGenerator().getNextTransactionId();
+        this.watershedTxnId = Env.getCurrentGlobalTransactionMgr().getNextTransactionId();
         this.jobState = JobState.WAITING_TXN;
 
         // write edit log
@@ -353,7 +369,8 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                     indexSchemaVersionAndHashMap.get(shadowIdxId).schemaVersion,
                     indexSchemaVersionAndHashMap.get(shadowIdxId).schemaHash,
                     indexShortKeyMap.get(shadowIdxId), TStorageType.COLUMN,
-                    tbl.getKeysTypeByIndexId(indexIdMap.get(shadowIdxId)));
+                    tbl.getKeysTypeByIndexId(indexIdMap.get(shadowIdxId)),
+                    indexChange ? indexes : tbl.getIndexMetaByIndexId(indexIdMap.get(shadowIdxId)).getIndexes());
         }
 
         tbl.rebuildFullSchema();
@@ -368,7 +385,6 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
     @Override
     protected void runWaitingTxnJob() throws AlterCancelException {
         Preconditions.checkState(jobState == JobState.WAITING_TXN, jobState);
-
         try {
             if (!isPreviousLoadFinished()) {
                 LOG.info("wait transactions before {} to be finished, schema change job: {}", watershedTxnId, jobId);
@@ -390,6 +406,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         }
 
         tbl.readLock();
+        Map<Object, List<TColumn>> tcloumnsPool  = Maps.newHashMap();
         try {
             Map<String, Column> indexColumnMap = Maps.newHashMap();
             for (Map.Entry<Long, List<Column>> entry : indexSchemaMap.entrySet()) {
@@ -424,9 +441,9 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                         destSlotDesc.setColumn(column);
                         destSlotDesc.setIsNullable(column.isAllowNull());
 
-                        if (indexColumnMap.containsKey(SchemaChangeHandler.SHADOW_NAME_PRFIX + column.getName())) {
+                        if (indexColumnMap.containsKey(SchemaChangeHandler.SHADOW_NAME_PREFIX + column.getName())) {
                             Column newColumn = indexColumnMap
-                                    .get(SchemaChangeHandler.SHADOW_NAME_PRFIX + column.getName());
+                                    .get(SchemaChangeHandler.SHADOW_NAME_PREFIX + column.getName());
                             if (newColumn.getType() != column.getType()) {
                                 try {
                                     SlotRef slot = new SlotRef(destSlotDesc);
@@ -452,7 +469,8 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                             AlterReplicaTask rollupTask = new AlterReplicaTask(shadowReplica.getBackendId(), dbId,
                                     tableId, partitionId, shadowIdxId, originIdxId, shadowTabletId, originTabletId,
                                     shadowReplica.getId(), shadowSchemaHash, originSchemaHash, visibleVersion, jobId,
-                                    JobType.SCHEMA_CHANGE, defineExprs, descTable, originSchemaColumns);
+                                    JobType.SCHEMA_CHANGE, defineExprs, descTable, originSchemaColumns, tcloumnsPool,
+                                    null);
                             schemaChangeBatchTask.addTask(rollupTask);
                         }
                     }
@@ -498,10 +516,10 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
             LOG.info("schema change tasks not finished. job: {}", jobId);
             List<AgentTask> tasks = schemaChangeBatchTask.getUnfinishedTasks(2000);
             for (AgentTask task : tasks) {
-                if (task.getFailedTimes() >= 3) {
+                if (task.getFailedTimes() > 0) {
                     task.setFinished(true);
                     AgentTaskQueue.removeTask(task.getBackendId(), TTaskType.ALTER, task.getSignature());
-                    LOG.warn("schema change task failed after try three times: " + task.getErrorMsg());
+                    LOG.warn("schema change task failed: " + task.getErrorMsg());
                     if (!failedAgentTasks.containsKey(task.getTabletId())) {
                         failedAgentTasks.put(task.getTabletId(), Lists.newArrayList(task));
                     } else {
@@ -512,17 +530,19 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                     int failedTaskCount = failedAgentTasks.get(task.getTabletId()).size();
                     if (expectSucceedTaskNum - failedTaskCount < expectSucceedTaskNum / 2 + 1) {
                         throw new AlterCancelException("schema change tasks failed on same tablet reach threshold "
-                                    + failedAgentTasks.get(task.getTabletId()));
+                                + failedAgentTasks.get(task.getTabletId()));
                     }
                 }
             }
             return;
         }
+        waitWalFinished();
         /*
          * all tasks are finished. check the integrity.
          * we just check whether all new replicas are healthy.
          */
         tbl.writeLockOrAlterCancelException();
+
         try {
             Preconditions.checkState(tbl.getState() == OlapTableState.SCHEMA_CHANGE);
             TabletInvertedIndex invertedIndex = Env.getCurrentInvertedIndex();
@@ -562,7 +582,6 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                     } // end for tablets
                 }
             } // end for partitions
-
             // all partitions are good
             onFinished(tbl);
         } finally {
@@ -575,6 +594,37 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
 
         Env.getCurrentEnv().getEditLog().logAlterJob(this);
         LOG.info("schema change job finished: {}", jobId);
+
+        changeTableState(dbId, tableId, OlapTableState.NORMAL);
+        LOG.info("set table's state to NORMAL, table id: {}, job id: {}", tableId, jobId);
+    }
+
+    private void waitWalFinished() {
+        // wait wal done here
+        Env.getCurrentEnv().getGroupCommitManager().blockTable(tableId);
+        LOG.info("block group commit for table={} when schema change", tableId);
+        List<Long> aliveBeIds = Env.getCurrentSystemInfo().getAllBackendIds(true);
+        long expireTime = System.currentTimeMillis() + Config.check_wal_queue_timeout_threshold;
+        while (true) {
+            LOG.info("wait for wal queue size to be empty");
+            boolean walFinished = Env.getCurrentEnv().getGroupCommitManager()
+                    .isPreviousWalFinished(tableId, aliveBeIds);
+            if (walFinished) {
+                LOG.info("all wal is finished for table={}", tableId);
+                break;
+            } else if (System.currentTimeMillis() > expireTime) {
+                LOG.warn("waitWalFinished time out for table={}", tableId);
+                break;
+            } else {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ie) {
+                    LOG.warn("failed to wait for wal for table={} when schema change", tableId, ie);
+                }
+            }
+        }
+        Env.getCurrentEnv().getGroupCommitManager().unblockTable(tableId);
+        LOG.info("unblock group commit for table={} when schema change", tableId);
     }
 
     private void onFinished(OlapTable tbl) {
@@ -657,8 +707,6 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         if (storageFormat == TStorageFormat.V2) {
             tbl.setStorageFormat(storageFormat);
         }
-
-        tbl.setState(OlapTableState.NORMAL);
     }
 
     /*
@@ -678,6 +726,10 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         this.finishedTimeMs = System.currentTimeMillis();
         LOG.info("cancel {} job {}, err: {}", this.type, jobId, errMsg);
         Env.getCurrentEnv().getEditLog().logAlterJob(this);
+
+        changeTableState(dbId, tableId, OlapTableState.NORMAL);
+        LOG.info("set table's state to NORMAL when cancel, table id: {}, job id: {}", tableId, jobId);
+
         return true;
     }
 
@@ -708,8 +760,6 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                     for (String shadowIndexName : indexIdToName.values()) {
                         tbl.deleteIndexInfo(shadowIndexName);
                     }
-                    tbl.setState(OlapTableState.NORMAL);
-                    LOG.info("set table's state to NORMAL when cancel job: {}", tbl.getId(), jobId);
                 } finally {
                     tbl.writeUnlock();
                 }
@@ -742,10 +792,10 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                 MaterializedIndex shadowIndex = cell.getValue();
 
                 TStorageMedium medium = olapTable.getPartitionInfo().getDataProperty(partitionId).getStorageMedium();
-                TabletMeta shadowTabletMeta = new TabletMeta(dbId, tableId, partitionId, shadowIndexId,
-                        indexSchemaVersionAndHashMap.get(shadowIndexId).schemaHash, medium);
 
                 for (Tablet shadownTablet : shadowIndex.getTablets()) {
+                    TabletMeta shadowTabletMeta = new TabletMeta(dbId, tableId, partitionId, shadowIndexId,
+                            indexSchemaVersionAndHashMap.get(shadowIndexId).schemaHash, medium);
                     invertedIndex.addTablet(shadownTablet.getId(), shadowTabletMeta);
                     for (Replica shadowReplica : shadownTablet.getReplicas()) {
                         invertedIndex.addReplica(shadownTablet.getId(), shadowReplica);
@@ -760,7 +810,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         }
 
         this.watershedTxnId = replayedJob.watershedTxnId;
-        jobState = JobState.WAITING_TXN;
+        jobState = JobState.PENDING;
         LOG.info("replay pending schema change job: {}, table id: {}", jobId, tableId);
     }
 
@@ -804,7 +854,9 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         }
         jobState = JobState.FINISHED;
         this.finishedTimeMs = replayedJob.finishedTimeMs;
-        LOG.info("replay finished schema change job: {}", jobId);
+        LOG.info("replay finished schema change job: {} table id: {}", jobId, tableId);
+        changeTableState(dbId, tableId, OlapTableState.NORMAL);
+        LOG.info("set table's state to NORMAL when replay finished, table id: {}, job id: {}", tableId, jobId);
     }
 
     /**
@@ -816,6 +868,8 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         this.finishedTimeMs = replayedJob.finishedTimeMs;
         this.errMsg = replayedJob.errMsg;
         LOG.info("replay cancelled schema change job: {}", jobId);
+        changeTableState(dbId, tableId, OlapTableState.NORMAL);
+        LOG.info("set table's state to NORMAL when replay cancelled, table id: {}, job id: {}", tableId, jobId);
     }
 
     @Override
@@ -860,7 +914,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
             info.add(TimeUtils.longToTimeStringWithms(createTimeMs));
             info.add(TimeUtils.longToTimeStringWithms(finishedTimeMs));
             // only show the origin index name
-            info.add(indexIdToName.get(shadowIndexId).substring(SchemaChangeHandler.SHADOW_NAME_PRFIX.length()));
+            info.add(indexIdToName.get(shadowIndexId).substring(SchemaChangeHandler.SHADOW_NAME_PREFIX.length()));
             info.add(shadowIndexId);
             info.add(entry.getValue());
             info.add(indexSchemaVersionAndHashMap.get(shadowIndexId).toString());
@@ -889,9 +943,33 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         return taskInfos;
     }
 
+    private void changeTableState(long dbId, long tableId, OlapTableState olapTableState) {
+        try {
+            Database db = Env.getCurrentInternalCatalog().getDbOrMetaException(dbId);
+            OlapTable olapTable = (OlapTable) db.getTableOrMetaException(tableId, TableType.OLAP);
+            olapTable.writeLockOrMetaException();
+            try {
+                if (olapTable.getState() == olapTableState) {
+                    return;
+                } else if (olapTable.getState() == OlapTableState.SCHEMA_CHANGE) {
+                    olapTable.setState(olapTableState);
+                }
+            } finally {
+                olapTable.writeUnlock();
+            }
+        } catch (MetaNotFoundException e) {
+            LOG.warn("[INCONSISTENT META] changing table status failed after schema change job done", e);
+        }
+    }
+
     @Override
     public void write(DataOutput out) throws IOException {
         String json = GsonUtils.GSON.toJson(this, AlterJobV2.class);
         Text.writeString(out, json);
+    }
+
+    @Override
+    public String toJson() {
+        return GsonUtils.GSON.toJson(this);
     }
 }

@@ -17,23 +17,31 @@
 
 #pragma once
 
-#include "common/status.h"
-#include "gen_cpp/internal_service.pb.h"
-#include "runtime/cache/result_cache.h"
-#include "util/priority_thread_pool.hpp"
+#include <gen_cpp/internal_service.pb.h>
 
-namespace brpc {
-class Controller;
-}
+#include <string>
+
+#include "common/status.h"
+#include "util/work_thread_pool.hpp"
+
+namespace google::protobuf {
+class Closure;
+class RpcController;
+} // namespace google::protobuf
 
 namespace doris {
 
+class StorageEngine;
 class ExecEnv;
+class PHandShakeRequest;
+class PHandShakeResponse;
+class LoadStreamMgr;
+class RuntimeState;
 
-class PInternalServiceImpl : public PBackendService {
+class PInternalService : public PBackendService {
 public:
-    PInternalServiceImpl(ExecEnv* exec_env);
-    virtual ~PInternalServiceImpl();
+    PInternalService(ExecEnv* exec_env);
+    ~PInternalService() override;
 
     void transmit_data(::google::protobuf::RpcController* controller,
                        const ::doris::PTransmitDataParams* request,
@@ -68,20 +76,24 @@ public:
     void fetch_data(google::protobuf::RpcController* controller, const PFetchDataRequest* request,
                     PFetchDataResult* result, google::protobuf::Closure* done) override;
 
+    void fetch_table_schema(google::protobuf::RpcController* controller,
+                            const PFetchTableSchemaRequest* request,
+                            PFetchTableSchemaResult* result,
+                            google::protobuf::Closure* done) override;
+
+    void fetch_arrow_flight_schema(google::protobuf::RpcController* controller,
+                                   const PFetchArrowFlightSchemaRequest* request,
+                                   PFetchArrowFlightSchemaResult* result,
+                                   google::protobuf::Closure* done) override;
+
     void tablet_writer_open(google::protobuf::RpcController* controller,
                             const PTabletWriterOpenRequest* request,
                             PTabletWriterOpenResult* response,
                             google::protobuf::Closure* done) override;
 
-    void tablet_writer_add_batch(google::protobuf::RpcController* controller,
-                                 const PTabletWriterAddBatchRequest* request,
-                                 PTabletWriterAddBatchResult* response,
-                                 google::protobuf::Closure* done) override;
-
-    void tablet_writer_add_batch_by_http(google::protobuf::RpcController* controller,
-                                         const ::doris::PEmptyRequest* request,
-                                         PTabletWriterAddBatchResult* response,
-                                         google::protobuf::Closure* done) override;
+    void open_load_stream(google::protobuf::RpcController* controller,
+                          const POpenLoadStreamRequest* request, POpenLoadStreamResponse* response,
+                          google::protobuf::Closure* done) override;
 
     void tablet_writer_add_block(google::protobuf::RpcController* controller,
                                  const PTabletWriterAddBlockRequest* request,
@@ -120,6 +132,10 @@ public:
                       const ::doris::PPublishFilterRequest* request,
                       ::doris::PPublishFilterResponse* response,
                       ::google::protobuf::Closure* done) override;
+    void apply_filterv2(::google::protobuf::RpcController* controller,
+                        const ::doris::PPublishFilterRequestV2* request,
+                        ::doris::PPublishFilterResponse* response,
+                        ::google::protobuf::Closure* done) override;
     void transmit_block(::google::protobuf::RpcController* controller,
                         const ::doris::PTransmitDataParams* request,
                         ::doris::PTransmitDataResult* response,
@@ -148,18 +164,35 @@ public:
                            google::protobuf::Closure* done) override;
     void hand_shake(google::protobuf::RpcController* controller, const PHandShakeRequest* request,
                     PHandShakeResponse* response, google::protobuf::Closure* done) override;
-    void request_slave_tablet_pull_rowset(google::protobuf::RpcController* controller,
-                                          const PTabletWriteSlaveRequest* request,
-                                          PTabletWriteSlaveResult* response,
-                                          google::protobuf::Closure* done) override;
-    void response_slave_tablet_pull_rowset(google::protobuf::RpcController* controller,
-                                           const PTabletWriteSlaveDoneRequest* request,
-                                           PTabletWriteSlaveDoneResult* response,
-                                           google::protobuf::Closure* done) override;
+
+    void report_stream_load_status(google::protobuf::RpcController* controller,
+                                   const PReportStreamLoadStatusRequest* request,
+                                   PReportStreamLoadStatusResponse* response,
+                                   google::protobuf::Closure* done) override;
+
+    void glob(google::protobuf::RpcController* controller, const PGlobRequest* request,
+              PGlobResponse* response, google::protobuf::Closure* done) override;
+
+    void group_commit_insert(google::protobuf::RpcController* controller,
+                             const PGroupCommitInsertRequest* request,
+                             PGroupCommitInsertResponse* response,
+                             google::protobuf::Closure* done) override;
+
+    void get_wal_queue_size(google::protobuf::RpcController* controller,
+                            const PGetWalQueueSizeRequest* request,
+                            PGetWalQueueSizeResponse* response,
+                            google::protobuf::Closure* done) override;
 
 private:
-    Status _exec_plan_fragment(const std::string& s_request, PFragmentRequestVersion version,
-                               bool compact);
+    void _exec_plan_fragment_in_pthread(google::protobuf::RpcController* controller,
+                                        const PExecPlanFragmentRequest* request,
+                                        PExecPlanFragmentResult* result,
+                                        google::protobuf::Closure* done);
+
+    Status _exec_plan_fragment_impl(const std::string& s_request, PFragmentRequestVersion version,
+                                    bool compact,
+                                    const std::function<void(RuntimeState*, Status*)>& cb =
+                                            std::function<void(RuntimeState*, Status*)>());
 
     Status _fold_constant_expr(const std::string& ser_request, PConstantExprResult* response);
 
@@ -173,24 +206,70 @@ private:
                          ::doris::PTransmitDataResult* response, ::google::protobuf::Closure* done,
                          const Status& extract_st);
 
-    void _tablet_writer_add_batch(google::protobuf::RpcController* controller,
-                                  const PTabletWriterAddBatchRequest* request,
-                                  PTabletWriterAddBatchResult* response,
-                                  google::protobuf::Closure* done);
+protected:
+    ExecEnv* _exec_env = nullptr;
 
-    void _tablet_writer_add_block(google::protobuf::RpcController* controller,
-                                  const PTabletWriterAddBlockRequest* request,
-                                  PTabletWriterAddBlockResult* response,
-                                  google::protobuf::Closure* done);
+    // every brpc service request should put into thread pool
+    // the reason see issue #16634
+    // define the interface for reading and writing data as heavy interface
+    // otherwise as light interface
+    FifoThreadPool _heavy_work_pool;
+    FifoThreadPool _light_work_pool;
+
+    std::unique_ptr<LoadStreamMgr> _load_stream_mgr;
+};
+
+// `StorageEngine` mixin for `PInternalService`
+class PInternalServiceImpl final : public PInternalService {
+public:
+    PInternalServiceImpl(StorageEngine& engine, ExecEnv* exec_env);
+
+    ~PInternalServiceImpl() override;
+    void request_slave_tablet_pull_rowset(google::protobuf::RpcController* controller,
+                                          const PTabletWriteSlaveRequest* request,
+                                          PTabletWriteSlaveResult* response,
+                                          google::protobuf::Closure* done) override;
+    void response_slave_tablet_pull_rowset(google::protobuf::RpcController* controller,
+                                           const PTabletWriteSlaveDoneRequest* request,
+                                           PTabletWriteSlaveDoneResult* response,
+                                           google::protobuf::Closure* done) override;
+    void multiget_data(google::protobuf::RpcController* controller, const PMultiGetRequest* request,
+                       PMultiGetResponse* response, google::protobuf::Closure* done) override;
+
+    void tablet_fetch_data(google::protobuf::RpcController* controller,
+                           const PTabletKeyLookupRequest* request,
+                           PTabletKeyLookupResponse* response,
+                           google::protobuf::Closure* done) override;
+
+    void get_column_ids_by_tablet_ids(google::protobuf::RpcController* controller,
+                                      const PFetchColIdsRequest* request,
+                                      PFetchColIdsResponse* response,
+                                      google::protobuf::Closure* done) override;
+
+    void get_tablet_rowset_versions(google::protobuf::RpcController* controller,
+                                    const PGetTabletVersionsRequest* request,
+                                    PGetTabletVersionsResponse* response,
+                                    google::protobuf::Closure* done) override;
+
+    void fetch_remote_tablet_schema(google::protobuf::RpcController* controller,
+                                    const PFetchRemoteSchemaRequest* request,
+                                    PFetchRemoteSchemaResponse* response,
+                                    google::protobuf::Closure* done) override;
+
+private:
+    Status _tablet_fetch_data(const PTabletKeyLookupRequest* request,
+                              PTabletKeyLookupResponse* response);
 
     void _response_pull_slave_rowset(const std::string& remote_host, int64_t brpc_port,
                                      int64_t txn_id, int64_t tablet_id, int64_t node_id,
                                      bool is_succeed);
+    Status _multi_get(const PMultiGetRequest& request, PMultiGetResponse* response);
 
-private:
-    ExecEnv* _exec_env;
-    PriorityThreadPool _tablet_worker_pool;
-    PriorityThreadPool _slave_replica_worker_pool;
+    void _get_column_ids_by_tablet_ids(google::protobuf::RpcController* controller,
+                                       const PFetchColIdsRequest* request,
+                                       PFetchColIdsResponse* response,
+                                       google::protobuf::Closure* done);
+
+    StorageEngine& _engine;
 };
-
 } // namespace doris

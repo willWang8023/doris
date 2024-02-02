@@ -69,6 +69,7 @@ Variables that support both session-level and global-level setting include:
 * `sql_mode`
 * `enable_profile`
 * `query_timeout`
+* <version since="dev" type="inline">`insert_timeout`</version>
 * `exec_mem_limit`
 * `batch_size`
 * `parallel_fragment_exec_instance_num`
@@ -80,6 +81,9 @@ Variables that support both session-level and global-level setting include:
 Variables that support only global-level setting include:
 
 * `default_rowset_type`
+* `default_password_lifetime`
+* `password_history`
+* `validate_password_policy`
 
 At the same time, variable settings also support constant expressions. Such as:
 
@@ -108,7 +112,7 @@ Note that the comment must start with /*+ and can only follow the SELECT.
     
 * `auto_increment_increment`
 
-    Used for compatibility with MySQL clients. No practical effect.
+    Used for compatibility with MySQL clients. No practical effect. Although Doris already has [AUTO_INCREMENT](../sql-manual/sql-reference/Data-Definition-Statements/Create/CREATE-TABLE#column_definition_list) feature, but this parameter does not affect the behavior of 'AUTO_INCREMENT'. Same as auto_increment_offset.
     
 * `autocommit`
 
@@ -173,6 +177,14 @@ Note that the comment must start with /*+ and can only follow the SELECT.
 
     Used for compatibility with MySQL clients. No practical effect.
 
+* `have_query_cache`
+
+  Used for compatibility with MySQL clients. No practical effect.
+
+* `default_order_by_limit`
+
+  Used to control the default number of items returned after OrderBy. The default value is -1, and the maximum number of records after the query is returned by default, and the upper limit is the MAX_VALUE of the long data type.
+
 * `delete_without_partition`
 
     When set to true. When using the delete command to delete partition table data, no partition is required. The delete operation will be automatically applied to all partitions.
@@ -181,11 +193,11 @@ Note that the comment must start with /*+ and can only follow the SELECT.
 
 * `disable_colocate_join`
 
-    Controls whether the [Colocation Join](../advanced/join-optimization/colocation-join.md) function is enabled. The default is false, which means that the feature is enabled. True means that the feature is disabled. When this feature is disabled, the query plan will not attempt to perform a Colocation Join.
+    Controls whether the [Colocation Join](../query-acceleration/join-optimization/colocation-join.md) function is enabled. The default is false, which means that the feature is enabled. True means that the feature is disabled. When this feature is disabled, the query plan will not attempt to perform a Colocation Join.
     
 * `enable_bucket_shuffle_join`
 
-    Controls whether the [Bucket Shuffle Join](../advanced/join-optimization/bucket-shuffle-join.md) function is enabled. The default is true, which means that the feature is enabled. False means that the feature is disabled. When this feature is disabled, the query plan will not attempt to perform a Bucket Shuffle Join.
+    Controls whether the [Bucket Shuffle Join](../query-acceleration/join-optimization/bucket-shuffle-join.md) function is enabled. The default is true, which means that the feature is enabled. False means that the feature is disabled. When this feature is disabled, the query plan will not attempt to perform a Bucket Shuffle Join.
 
 * `disable_streaming_preaggregations`
 
@@ -212,6 +224,8 @@ Note that the comment must start with /*+ and can only follow the SELECT.
     Usually, only some blocking nodes (such as sorting node, aggregation node, and join node) consume more memory, while in other nodes (such as scan node), data is streamed and does not occupy much memory.
     
     When a `Memory Exceed Limit` error occurs, you can try to increase the parameter exponentially, such as 4G, 8G, 16G, and so on.
+
+    It should be noted that this value may fluctuate by a few MB.
     
 * `forward_to_master`
 
@@ -233,7 +247,7 @@ Note that the comment must start with /*+ and can only follow the SELECT.
 
         Forward to Master to view the start time and last heartbeat information.
         
-    4. `SHOW TABLET;`/`ADMIN SHOW REPLICA DISTRIBUTION;`/`ADMIN SHOW REPLICA STATUS;`
+    4. `SHOW TABLET;`/`SHOW REPLICA DISTRIBUTION;`/`SHOW REPLICA STATUS;`
 
         Forward to Master to view the tablet information stored in the Master FE metadata. Under normal circumstances, the tablet information in different FE metadata should be consistent. When a problem occurs, this method can be used to compare the difference between the current FE and Master FE metadata.
         
@@ -269,14 +283,6 @@ Note that the comment must start with /*+ and can only follow the SELECT.
   
     Show Doris's license. No other effect.
 
-* `load_mem_limit`
-
-    Used to specify the memory limit of the load operation. The default is 2GB.
-
-    Broker Load, Stream Load and Routine Load use `load_mem_limit` by default; if the user specifies the task `exec_mem_limit` parameter when creating a load, the specified value is used.
-
-    The INSERT operation has two parts: query and import. The memory limit of the load part of INSERT is `load_mem_limit`, and the query part is limited to `exec_mem_limit`.
-    
 * `lower_case_table_names`
 
     Used to control whether the user table name is case-sensitive.
@@ -307,7 +313,6 @@ Note that the comment must start with /*+ and can only follow the SELECT.
 
     The system view table names in information_schema are case-insensitive and behave as 2 when the value of `lower_case_table_names` is 0.
 
-Translated with www.DeepL.com/Translator (free version)
 
 * `max_allowed_packet`
 
@@ -359,7 +364,12 @@ Translated with www.DeepL.com/Translator (free version)
     
 * `query_timeout`
 
-    Used to set the query timeout. This variable applies to all query statements in the current connection, as well as INSERT statements. The default is 5 minutes, in seconds.
+    Used to set the query timeout. This variable applies to all query statements in the current connection. Particularly, timeout of INSERT statements is recommended to be managed by the insert_timeout below. The default is 15 minutes, in seconds.
+
+* `insert_timeout`
+
+  <version since="dev"></version>Used to set the insert timeout. This variable applies to INSERT statements particularly in the current connection, and is recommended to manage long-duration INSERT action. The default is 4 hours, in seconds. It will lose effect when query_timeout is
+    greater than itself to make it compatible with the habits of older version users to use query_timeout to control the timeout of INSERT statements.
 
 * `resource_group`
 
@@ -379,15 +389,15 @@ Translated with www.DeepL.com/Translator (free version)
     
 * `sql_select_limit`
 
-    Used for compatibility with MySQL clients. No practical effect.
+    Used to limit return rows of select stmt, including select clause of insert stmt.
 
 * `system_time_zone`
 
-    Displays the current system time zone. Cannot be changed.
+    Set to the current system time zone when the cluster is initialised. It cannot be changed.
     
 * `time_zone`
 
-    Used to set the time zone of the current session. The time zone has an effect on the results of certain time functions. For the time zone, see [here](./time-zone.md).
+    Used to set the time zone for the current session. Defaults to the value of `system_time_zone`. It affects the results of certain time functions. For more information, see the [time zone](./time-zone) documentation.
     
 * `tx_isolation`
 
@@ -481,7 +491,33 @@ Translated with www.DeepL.com/Translator (free version)
     Used to control whether to perform predicate derivation. There are two values: true and false. It is turned off by default, that is, the system does not perform predicate derivation, and uses the original predicate to perform related operations. After it is set to true, predicate expansion is performed.
 
 * `return_object_data_as_binary`
-  Used to identify whether to return the bitmap/hll result in the select result. In the select into outfile statement, if the export file format is csv, the bimap/hll data will be base64-encoded, if it is the parquet file format, the data will be stored as a byte array
+  Used to identify whether to return the bitmap/hll result in the select result. In the select into outfile statement, if the export file format is csv, the bimap/hll data will be base64-encoded, if it is the parquet file format, the data will be stored as a byte array. Below will be an example of Java, more examples can be found in [samples](https://github.com/apache/doris/tree/master/samples/read_bitmap).
+
+  ```java
+  try (Connection conn = DriverManager.getConnection("jdbc:mysql://127.0.0.1:9030/test?user=root");
+               Statement stmt = conn.createStatement()
+  ) {
+      stmt.execute("set return_object_data_as_binary=true"); // IMPORTANT!!!
+      ResultSet rs = stmt.executeQuery("select uids from t_bitmap");
+      while(rs.next()){
+          byte[] bytes = rs.getBytes(1);
+          RoaringBitmap bitmap32 = new RoaringBitmap();
+          switch(bytes[0]) {
+              case 0: // for empty bitmap
+                  break;
+              case 1: // for only 1 element in bitmap32
+                  bitmap32.add(ByteBuffer.wrap(bytes,1,bytes.length-1)
+                          .order(ByteOrder.LITTLE_ENDIAN)
+                          .getInt());
+                  break;
+              case 2: // for more than 1 elements in bitmap32
+                  bitmap32.deserialize(ByteBuffer.wrap(bytes,1,bytes.length-1));
+                  break;
+              // for more details, see https://github.com/apache/doris/tree/master/samples/read_bitmap
+          }
+      }
+  }
+  ```
 
 * `block_encryption_mode`
   The block_encryption_mode variable controls the block encryption mode. The default setting is empty, when use AES equal to `AES_128_ECB`, when use SM4 equal to `SM3_128_ECB`
@@ -528,7 +564,173 @@ Translated with www.DeepL.com/Translator (free version)
   Used to control whether trim the tailing spaces while quering Hive external tables. The default is false.
 
 * `skip_storage_engine_merge`
-  For debugging purpose. In vectorized execution engine, in case of problems of reading data of Aggregate Key model and Unique Key model, setting value to `true` will read data as Duplicate Key model.
+
+    For debugging purpose. In vectorized execution engine, in case of problems of reading data of Aggregate Key model and Unique Key model, setting value to `true` will read data as Duplicate Key model.
 
 * `skip_delete_predicate`
-  For debugging purpose. In vectorized execution engine, in case of problems of reading data, setting value to `true` will also read deleted data.
+
+    For debugging purpose. In vectorized execution engine, in case of problems of reading data, setting value to `true` will also read deleted data.
+
+* `skip_delete_bitmap`
+
+    For debugging purpose. In Unique Key MoW table, in case of problems of reading data, setting value to `true` will also read deleted data.
+
+* `skip_missing_version`
+
+    In some scenarios, all replicas of tablet are having missing versions, and the tablet is unable to recover. This config can control the behavior of query. When it is opened, the query will ignore the visible version recorded in FE partition, use the replica version. If the replica on be has missing versions, the query will directly skip this missing version, and only return the data of the existing version, In addition, the query will always try to select the one with the highest lastSuccessVersion among all surviving BE replicas, so as to recover as much data as possible. You should only open it in the emergency scenarios mentioned above, only used for temporary recovery queries. Note that, this variable conflicts with the a variable, when the a variable is not -1, this variable will not work.
+
+* `skip_bad_tablet`
+
+    In some scenarios, user has a huge amount of data and only a single replica was specified when creating the table, if one of the tablet is damaged, the table will not be able to be select. If the user does not care about the integrity of the data, they can use this variable to temporarily skip the bad tablet for querying and load the remaining data into a new table.
+
+* `default_password_lifetime`
+
+	Default password expiration time. The default value is 0, which means no expiration. The unit is days. This parameter is only enabled if the user's password expiration property has a value of DEFAULT. like:
+
+   ````
+   CREATE USER user1 IDENTIFIED BY "12345" PASSWORD_EXPIRE DEFAULT;
+   ALTER USER user1 PASSWORD_EXPIRE DEFAULT;
+   ````
+
+* `password_history`
+
+	The default number of historical passwords. The default value is 0, which means no limit. This parameter is enabled only when the user's password history attribute is the DEFAULT value. like:
+
+   ````
+   CREATE USER user1 IDENTIFIED BY "12345" PASSWORD_HISTORY DEFAULT;
+   ALTER USER user1 PASSWORD_HISTORY DEFAULT;
+   ````
+
+* `validate_password_policy`
+
+	Password strength verification policy. Defaults to `NONE` or `0`, i.e. no verification. Can be set to `STRONG` or `2`. When set to `STRONG` or `2`, when setting a password via the `ALTER USER` or `SET PASSWORD` commands, the password must contain any of "uppercase letters", "lowercase letters", "numbers" and "special characters". 3 items, and the length must be greater than or equal to 8. Special characters include: `~!@#$%^&*()_+|<>,.?/:;'[]{}"`.
+
+* `group_concat_max_len`
+
+    For compatible purpose. This variable has no effect, just enable some BI tools can query or set this session variable sucessfully.
+
+* `rewrite_or_to_in_predicate_threshold`
+
+    The default threshold of rewriting OR to IN. The default value is 2, which means that when there are 2 ORs, if they can be compact, they will be rewritten as IN predicate.
+
+*   `group_by_and_having_use_alias_first`
+
+    Specifies whether group by and having clauses use column aliases rather than searching for column name in From clause. The default value is false.
+
+* `enable_file_cache`
+
+    Set wether to use block file cache, default false. This variable takes effect only if the BE config enable_file_cache=true. The cache is not used when BE config enable_file_cache=false.
+
+* `file_cache_base_path`
+
+    Specify the storage path of the block file cache on BE, default 'random', and randomly select the storage path configured by BE.
+
+* `enable_inverted_index_query`
+
+    Set wether to use inverted index query, default true.
+
+* `topn_opt_limit_threshold`
+
+    Set threshold for limit of topn query (eg. SELECT * FROM t ORDER BY k LIMIT n). If n <= threshold, topn optimizations(runtime predicate pushdown, two phase result fetch and read order by key) will enable automatically, otherwise disable. Default value is 1024.
+
+* `drop_table_if_ctas_failed`
+
+    Controls whether create table as select deletes created tables when a insert error occurs, the default value is true.
+
+* `show_user_default_role`
+
+    <version since="dev"></version>
+
+    Controls whether to show each user's implicit roles in the results of `show roles`. Default is false.
+
+* `use_fix_replica`
+
+    <version since="1.2.0"></version>
+
+    Use a fixed replica to query. replica starts with 0 and if use_fix_replica is 0, the smallest is used, if use_fix_replica is 1, the second smallest is used, and so on. The default value is -1, indicating that the function is disabled.
+
+* `dry_run_query`
+
+    <version since="dev"></version>
+
+    If set to true, for query requests, the actual result set will no longer be returned, but only the number of rows, while for load and insert, the data is discarded by sink node, no writing happens. The default is false.
+
+    This parameter can be used to avoid the time-consuming result set transmission when testing a large number of data sets, and focus on the time-consuming underlying query execution.
+
+    ```
+    mysql> select * from bigtable;
+    +--------------+
+    | ReturnedRows |
+    +--------------+
+    | 10000000     |
+    +--------------+
+    ```
+  
+* `enable_parquet_lazy_materialization`
+
+  Controls whether to use lazy materialization technology in parquet reader. The default value is true.
+
+* `enable_orc_lazy_materialization`
+
+  Controls whether to use lazy materialization technology in orc reader. The default value is true.
+
+* `enable_strong_consistency_read`
+
+  Used to enable strong consistent reading. By default, Doris supports strong consistency within the same session, that is, changes to data within the same session are visible in real time. If you want strong consistent reads between sessions, set this variable to true. 
+
+* `truncate_char_or_varchar_columns`
+
+  Whether to truncate char or varchar columns according to the table's schema. The default is false.
+
+  Because the maximum length of the char or varchar column in the schema of the table is inconsistent with the schema in the underlying parquet or orc file. At this time, if the option is turned on, it will be truncated according to the maximum length in the schema of the table.
+
+* `jdbc_clickhouse_query_final`
+
+  Whether to add the final keyword when using the JDBC Catalog function to query ClickHouse,default is false.
+  
+  It is used for the ReplacingMergeTree table engine of ClickHouse to deduplicate queries.
+
+* `enable_memtable_on_sink_node`
+
+  <version since="2.1.0">
+  Whether to enable MemTable on DataSink node when loading data, default is true.
+  </version>
+
+  Build MemTable on DataSink node, and send segments to other backends through brpc streaming.
+  It reduces duplicate work among replicas, and saves time in data serialization & deserialization.
+
+* `enable_unique_key_partial_update`
+
+  <version since="2.0.2">
+  Whether to enable partial columns update semantics for native insert into statement, default is false. Please note that the default value of the session variable `enable_insert_strict`, which controls whether the insert statement operates in strict mode, is true. In other words, the insert statement is in strict mode by default, and in this mode, updating non-existing keys in partial column updates is not allowed. Therefore, when using the insert statement for partial columns update and wishing to insert non-existing keys, you need to set `enable_unique_key_partial_update` to true and simultaneously set `enable_insert_strict` to false.
+  </version>
+
+* `describe_extend_variant_column`
+
+  Controls whether to extend variant column in desc table_name. The default value is false.
+
+***
+
+#### Supplementary instructions on statement execution timeout control
+
+* Means of control
+
+     Currently doris supports timeout control through `variable` and `user property` two systems. Both include `qeury_timeout` and `insert_timeout`.
+
+* Priority
+
+     The order of priority for timeout to take effect is: `session variable` > `user property` > `global variable` > `default value`
+
+     When a variable with a higher priority is not set, the value of the next priority is automatically adopted.
+
+* Related semantics
+
+     `query_timeout` is used to control the timeout of all statements, and `insert_timeout` is specifically used to control the timeout of the INSERT statement. When the INSERT statement is executed, the timeout time will take
+    
+     The maximum value of `query_timeout` and `insert_timeout`.
+
+     `query_timeout` and `insert_timeout` in `user property` can only be specified by the ADMIN user for the target user, and its semantics is to change the default timeout time of the specified user, and it does not have `quota` semantics.
+
+* Precautions
+
+     The timeout set by `user property` needs to be triggered after the client reconnects.

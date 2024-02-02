@@ -73,7 +73,7 @@ public class ShowGrantsStmt extends ShowStmt {
             if (isAll) {
                 throw new AnalysisException("Can not specified keyword ALL when specified user");
             }
-            userIdent.analyze(analyzer.getClusterName());
+            userIdent.analyze();
         } else {
             if (!isAll) {
                 // self
@@ -85,9 +85,12 @@ public class ShowGrantsStmt extends ShowStmt {
 
         // if show all grants, or show other user's grants, need global GRANT priv.
         if (isAll || !self.equals(userIdent)) {
-            if (!Env.getCurrentEnv().getAuth().checkGlobalPriv(ConnectContext.get(), PrivPredicate.GRANT)) {
+            if (!Env.getCurrentEnv().getAccessManager().checkGlobalPriv(ConnectContext.get(), PrivPredicate.GRANT)) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR, "GRANT");
             }
+        }
+        if (userIdent != null && !Env.getCurrentEnv().getAccessManager().getAuth().doesUserExist(userIdent)) {
+            throw new AnalysisException(String.format("User: %s does not exist", userIdent));
         }
     }
 

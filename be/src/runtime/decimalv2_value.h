@@ -17,17 +17,18 @@
 
 #pragma once
 
-#include <cctype>
-#include <climits>
+#include <glog/logging.h>
+#include <stdint.h>
+
+// IWYU pragma: no_include <bits/std_abs.h>
+#include <cmath> // IWYU pragma: keep
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <string_view>
 
-#include "udf/udf.h"
 #include "util/hash_util.hpp"
+#include "vec/core/wide_integer.h"
 
 namespace doris {
 
@@ -49,6 +50,7 @@ enum DecimalRoundMode { HALF_UP = 1, HALF_EVEN = 2, CEILING = 3, FLOOR = 4, TRUN
 
 class DecimalV2Value {
 public:
+    using NativeType = __int128_t;
     friend DecimalV2Value operator+(const DecimalV2Value& v1, const DecimalV2Value& v2);
     friend DecimalV2Value operator-(const DecimalV2Value& v1, const DecimalV2Value& v2);
     friend DecimalV2Value operator*(const DecimalV2Value& v1, const DecimalV2Value& v2);
@@ -139,6 +141,12 @@ public:
     // ATTN: invoker must make sure no OVERFLOW
     operator int128_t() const { return static_cast<int128_t>(_value / ONE_BILLION); }
 
+    operator wide::Int256() const {
+        wide::Int256 result;
+        wide::Int256::_impl::wide_integer_from_builtin(result, _value);
+        return result;
+    }
+
     operator bool() const { return _value != 0; }
 
     operator int8_t() const { return static_cast<char>(operator int64_t()); }
@@ -171,15 +179,7 @@ public:
 
     bool operator==(const DecimalV2Value& other) const { return _value == other.value(); }
 
-    bool operator!=(const DecimalV2Value& other) const { return _value != other.value(); }
-
-    bool operator<=(const DecimalV2Value& other) const { return _value <= other.value(); }
-
-    bool operator>=(const DecimalV2Value& other) const { return _value >= other.value(); }
-
-    bool operator<(const DecimalV2Value& other) const { return _value < other.value(); }
-
-    bool operator>(const DecimalV2Value& other) const { return _value > other.value(); }
+    auto operator<=>(const DecimalV2Value& other) const { return _value <=> other.value(); }
 
     // change to maximum value for given precision and scale
     // precision/scale - see decimal_bin_size() below
@@ -236,12 +236,6 @@ public:
                 MAX_INT_VALUE % get_scale_base(18 - precision + scale),
                 MAX_FRAC_VALUE / get_scale_base(9 - scale) * get_scale_base(9 - scale));
     }
-
-    static DecimalV2Value from_decimal_val(const DecimalV2Val& val) {
-        return DecimalV2Value(val.value());
-    }
-
-    void to_decimal_val(DecimalV2Val* value) const { value->val = _value; }
 
     // Solve Square root for int128
     static DecimalV2Value sqrt(const DecimalV2Value& v);
@@ -329,9 +323,14 @@ std::size_t hash_value(DecimalV2Value const& value);
 
 } // end namespace doris
 
-namespace std {
 template <>
-struct hash<doris::DecimalV2Value> {
+struct std::hash<doris::DecimalV2Value> {
     size_t operator()(const doris::DecimalV2Value& v) const { return doris::hash_value(v); }
 };
-} // namespace std
+
+template <>
+struct std::equal_to<doris::DecimalV2Value> {
+    bool operator()(const doris::DecimalV2Value& lhs, const doris::DecimalV2Value& rhs) const {
+        return lhs == rhs;
+    }
+};

@@ -58,10 +58,6 @@ under the License.
     </module>
 
     <module name="RegexpSingleline">
-        <property name="format" value="&gt;&gt;&gt;&gt;&gt;&gt;&gt;"/>
-        <property name="message" value="Merge conflicts unresolved."/>
-    </module>
-    <module name="RegexpSingleline">
         <property name="format" value="&lt;&lt;&lt;&lt;&lt;&lt;&lt;"/>
         <property name="message" value="Merge conflicts unresolved."/>
     </module>
@@ -170,6 +166,12 @@ under the License.
         <module name="RedundantImport"/>
         <module name="UnusedImports"/>
         <module name="EmptyStatement"/>
+        <!-- Disallow the use of commons-lang -->
+        <module name="Regexp">
+            <property name="format" value="org\.apache\.commons\.lang\."/>
+            <property name="illegalPattern" value="true"/>
+            <property name="message" value="Use commons-lang3 instead of commons-lang."/>
+        </module>
 
         <!-- Javadoc Comments -->
         <module name="AtclauseOrder">
@@ -435,6 +437,9 @@ under the License.
             <property name="file" value="${org.checkstyle.google.suppressionxpathfilter.config}"
                       default="checkstyle-xpath-suppressions.xml" />
             <property name="optional" value="true"/>
+        </module>
+        <module name="IllegalImport">
+            <property name="illegalPkgs" value="io.trino"/>
         </module>
     </module>
 </module>

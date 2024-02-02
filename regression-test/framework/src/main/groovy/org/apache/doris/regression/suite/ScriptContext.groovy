@@ -33,7 +33,6 @@ class ScriptContext implements Closeable {
     public final File file
     public final Config config
     public final File dataPath
-    public final String sf1DataPath
     public final File outputFile
     public final String name
     public final String flowName
@@ -63,7 +62,6 @@ class ScriptContext implements Closeable {
         def outputRelativePath = path.substring(0, path.lastIndexOf(".")) + ".out"
         this.outputFile = new File(new File(config.dataPath), outputRelativePath)
         this.dataPath = this.outputFile.getParentFile().getCanonicalFile()
-        this.sf1DataPath = config.sf1DataPath
     }
 
     private final synchronized Suite newSuite(String suiteName, String group) {
@@ -75,7 +73,8 @@ class ScriptContext implements Closeable {
             throw new IllegalStateException("Can not create suite after close scriptContext")
         }
 
-        SuiteContext suiteContext = new SuiteContext(file, suiteName, group, this,
+        SuiteCluster suiteCluster = new SuiteCluster(suiteName, config);
+        SuiteContext suiteContext = new SuiteContext(file, suiteName, group, this, suiteCluster,
                 suiteExecutors, actionExecutors, config) {
             @Override
             void close() {
@@ -87,7 +86,7 @@ class ScriptContext implements Closeable {
                 }
             }
         }
-        Suite suite = new Suite(suiteName, group, suiteContext)
+        Suite suite = new Suite(suiteName, group, suiteContext, suiteCluster)
         // count up, register suite thread
         phaser.register()
         return suite

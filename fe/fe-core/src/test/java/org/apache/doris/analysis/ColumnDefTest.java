@@ -25,7 +25,6 @@ import org.apache.doris.catalog.PrimitiveType;
 import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
-import org.apache.doris.common.Config;
 import org.apache.doris.qe.ConnectContext;
 
 import mockit.Mock;
@@ -47,9 +46,8 @@ public class ColumnDefTest {
         stringCol = new TypeDef(ScalarType.createChar(10));
         floatCol = new TypeDef(ScalarType.createType(PrimitiveType.FLOAT));
         booleanCol = new TypeDef(ScalarType.createType(PrimitiveType.BOOLEAN));
-        Config.enable_array_type = true;
 
-        ctx = new ConnectContext(null);
+        ctx = new ConnectContext();
         new MockUp<ConnectContext>() {
             @Mock
             public ConnectContext get() {
@@ -63,7 +61,7 @@ public class ColumnDefTest {
         ColumnDef column = new ColumnDef("col", intCol);
         column.analyze(true);
 
-        Assert.assertEquals("`col` int(11) NOT NULL COMMENT \"\"", column.toString());
+        Assert.assertEquals("`col` INT NOT NULL COMMENT \"\"", column.toString());
         Assert.assertEquals("col", column.getName());
         Assert.assertEquals(PrimitiveType.INT, column.getType().getPrimitiveType());
         Assert.assertNull(column.getAggregateType());
@@ -74,14 +72,14 @@ public class ColumnDefTest {
         column.analyze(true);
         Assert.assertNull(column.getAggregateType());
         Assert.assertEquals("10", column.getDefaultValue());
-        Assert.assertEquals("`col` int(11) NOT NULL DEFAULT \"10\" COMMENT \"\"", column.toSql());
+        Assert.assertEquals("`col` INT NOT NULL DEFAULT \"10\" COMMENT \"\"", column.toSql());
 
         // agg
         column = new ColumnDef("col", floatCol, false, AggregateType.SUM, false, new DefaultValue(true, "10"), "");
         column.analyze(true);
         Assert.assertEquals("10", column.getDefaultValue());
         Assert.assertEquals(AggregateType.SUM, column.getAggregateType());
-        Assert.assertEquals("`col` float SUM NOT NULL DEFAULT \"10\" COMMENT \"\"", column.toSql());
+        Assert.assertEquals("`col` FLOAT SUM NOT NULL DEFAULT \"10\" COMMENT \"\"", column.toSql());
     }
 
     @Test
@@ -91,14 +89,14 @@ public class ColumnDefTest {
             ColumnDef column = new ColumnDef("col", intCol, false, AggregateType.REPLACE_IF_NOT_NULL, false, DefaultValue.NOT_SET, "");
             column.analyze(true);
             Assert.assertEquals(AggregateType.REPLACE_IF_NOT_NULL, column.getAggregateType());
-            Assert.assertEquals("`col` int(11) REPLACE_IF_NOT_NULL NULL DEFAULT \"null\" COMMENT \"\"", column.toSql());
+            Assert.assertEquals("`col` INT REPLACE_IF_NOT_NULL NULL DEFAULT \"null\" COMMENT \"\"", column.toSql());
         } // CHECKSTYLE IGNORE THIS LINE
         { // CHECKSTYLE IGNORE THIS LINE
             // not allow null
             ColumnDef column = new ColumnDef("col", intCol, false, AggregateType.REPLACE_IF_NOT_NULL, false, new DefaultValue(true, "10"), "");
             column.analyze(true);
             Assert.assertEquals(AggregateType.REPLACE_IF_NOT_NULL, column.getAggregateType());
-            Assert.assertEquals("`col` int(11) REPLACE_IF_NOT_NULL NULL DEFAULT \"10\" COMMENT \"\"", column.toSql());
+            Assert.assertEquals("`col` INT REPLACE_IF_NOT_NULL NULL DEFAULT \"10\" COMMENT \"\"", column.toSql());
         } // CHECKSTYLE IGNORE THIS LINE
     }
 

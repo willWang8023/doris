@@ -32,6 +32,7 @@ import java.util.Objects;
  * Slot has not been bound.
  */
 public class UnboundSlot extends Slot implements Unbound, PropagateNullable {
+
     private final List<String> nameParts;
 
     public UnboundSlot(String... nameParts) {
@@ -39,7 +40,7 @@ public class UnboundSlot extends Slot implements Unbound, PropagateNullable {
     }
 
     public UnboundSlot(List<String> nameParts) {
-        this.nameParts = Objects.requireNonNull(nameParts, "nameParts can not be null");
+        this.nameParts = ImmutableList.copyOf(Objects.requireNonNull(nameParts, "nameParts can not be null"));
     }
 
     public List<String> getNameParts() {
@@ -55,6 +56,16 @@ public class UnboundSlot extends Slot implements Unbound, PropagateNullable {
                 return n;
             }
         }).reduce((left, right) -> left + "." + right).orElse("");
+    }
+
+    @Override
+    public List<String> getQualifier() {
+        return nameParts.subList(0, nameParts.size() - 1);
+    }
+
+    @Override
+    public String getInternalName() {
+        return getName();
     }
 
     @Override
@@ -85,7 +96,7 @@ public class UnboundSlot extends Slot implements Unbound, PropagateNullable {
 
     @Override
     public int hashCode() {
-        return Objects.hash(nameParts.toArray());
+        return nameParts.hashCode();
     }
 
     @Override

@@ -17,12 +17,24 @@
 
 #include "exec/odbc_connector.h"
 
+#include <glog/logging.h>
+#include <sql.h>
 #include <sqlext.h>
+#include <wchar.h>
 
-#include <codecvt>
+#include <ostream>
 
-#include "runtime/primitive_type.h"
-#include "util/types.h"
+#include "common/status.h"
+#include "runtime/define_primitive_type.h"
+#include "runtime/descriptors.h"
+#include "runtime/types.h"
+#include "util/runtime_profile.h"
+#include "vec/exprs/vexpr.h"
+#include "vec/exprs/vexpr_context.h"
+
+namespace doris {
+class RuntimeState;
+} // namespace doris
 
 #define ODBC_DISPOSE(h, ht, x, op)                                                        \
     {                                                                                     \
@@ -36,24 +48,21 @@
         }                                                                                 \
     }
 
-static constexpr uint32_t SMALL_COLUMN_SIZE_BUFFER = 100;
-// Now we only treat HLL, CHAR, VARCHAR as big column
-static constexpr uint32_t BIG_COLUMN_SIZE_BUFFER = 65535;
-
 namespace doris {
 
 ODBCConnector::ODBCConnector(const ODBCConnectorParam& param)
-        : TableConnector(param.tuple_desc, param.query_string),
+        : TableConnector(param.tuple_desc, param.use_transaction, param.table_name,
+                         param.query_string),
           _connect_string(param.connect_string),
           _field_num(0),
           _env(nullptr),
           _dbc(nullptr),
           _stmt(nullptr) {}
 
-ODBCConnector::~ODBCConnector() {
+Status ODBCConnector::close(Status) {
     // do not commit transaction, roll back
     if (_is_in_transaction) {
-        abort_trans();
+        RETURN_IF_ERROR(abort_trans());
     }
 
     if (_stmt != nullptr) {
@@ -68,9 +77,53 @@ ODBCConnector::~ODBCConnector() {
     if (_env != nullptr) {
         SQLFreeHandle(SQL_HANDLE_ENV, _env);
     }
+
+    return Status::OK();
 }
 
-Status ODBCConnector::open() {
+Status ODBCConnector::append(vectorized::Block* block,
+                             const vectorized::VExprContextSPtrs& output_vexpr_ctxs,
+                             uint32_t start_send_row, uint32_t* num_rows_sent,
+                             TOdbcTableType::type table_type) {
+    _insert_stmt_buffer.clear();
+    std::u16string insert_stmt;
+    SCOPED_TIMER(_convert_tuple_timer);
+    fmt::format_to(_insert_stmt_buffer, "INSERT INTO {} VALUES (", _table_name);
+
+    int num_rows = block->rows();
+    int num_columns = block->columns();
+    for (int i = start_send_row; i < num_rows; ++i) {
+        (*num_rows_sent)++;
+
+        // Construct insert statement of odbc/jdbc table
+        for (int j = 0; j < num_columns; ++j) {
+            if (j != 0) {
+                fmt::format_to(_insert_stmt_buffer, "{}", ", ");
+            }
+            auto& column_ptr = block->get_by_position(j).column;
+            auto& type_ptr = block->get_by_position(j).type;
+            RETURN_IF_ERROR(convert_column_data(
+                    column_ptr, type_ptr, output_vexpr_ctxs[j]->root()->type(), i, table_type));
+        }
+
+        if (i < num_rows - 1 && _insert_stmt_buffer.size() < INSERT_BUFFER_SIZE) {
+            fmt::format_to(_insert_stmt_buffer, "{}", "),(");
+        } else {
+            // batch exhausted or _insert_stmt_buffer is full, need to do real insert stmt
+            fmt::format_to(_insert_stmt_buffer, "{}", ")");
+            break;
+        }
+    }
+    // Translate utf8 string to utf16 to use unicode encoding
+    insert_stmt = utf8_to_u16string(_insert_stmt_buffer.data(),
+                                    _insert_stmt_buffer.data() + _insert_stmt_buffer.size());
+
+    RETURN_IF_ERROR(exec_write_sql(insert_stmt, _insert_stmt_buffer));
+    COUNTER_UPDATE(_sent_rows_counter, *num_rows_sent);
+    return Status::OK();
+}
+
+Status ODBCConnector::open(RuntimeState* state, bool read) {
     if (_is_open) {
         LOG(INFO) << "this scanner already opened";
         return Status::OK();
@@ -97,8 +150,9 @@ Status ODBCConnector::open() {
                  "driver connect");
 
     LOG(INFO) << "connect success:" << _connect_string.substr(0, _connect_string.find("Pwd="));
-
     _is_open = true;
+    static_cast<void>(begin_trans());
+
     return Status::OK();
 }
 
@@ -139,8 +193,8 @@ Status ODBCConnector::query() {
         auto type = _tuple_desc->slots()[i]->type().type;
         column_data->buffer_length = (type == TYPE_HLL || type == TYPE_CHAR ||
                                       type == TYPE_VARCHAR || type == TYPE_STRING)
-                                             ? BIG_COLUMN_SIZE_BUFFER
-                                             : SMALL_COLUMN_SIZE_BUFFER;
+                                             ? big_column_size_buffer
+                                             : small_column_size_buffer;
         column_data->target_value_ptr = malloc(sizeof(char) * column_data->buffer_length);
         _columns_data.emplace_back(column_data);
     }
@@ -196,15 +250,13 @@ Status ODBCConnector::exec_write_sql(const std::u16string& insert_stmt,
 }
 
 Status ODBCConnector::begin_trans() {
-    if (!_is_open) {
-        return Status::InternalError("Begin transaction before open.");
+    if (_use_tranaction) {
+        ODBC_DISPOSE(_dbc, SQL_HANDLE_DBC,
+                     SQLSetConnectAttr(_dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_OFF,
+                                       SQL_IS_UINTEGER),
+                     "Begin transcation");
+        _is_in_transaction = true;
     }
-
-    ODBC_DISPOSE(_dbc, SQL_HANDLE_DBC,
-                 SQLSetConnectAttr(_dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_OFF,
-                                   SQL_IS_UINTEGER),
-                 "Begin transcation");
-    _is_in_transaction = true;
 
     return Status::OK();
 }
@@ -217,17 +269,17 @@ Status ODBCConnector::abort_trans() {
     ODBC_DISPOSE(_dbc, SQL_HANDLE_DBC, SQLEndTran(SQL_HANDLE_DBC, _dbc, SQL_ROLLBACK),
                  "Abort transcation");
 
+    _is_in_transaction = false;
+
     return Status::OK();
 }
 
 Status ODBCConnector::finish_trans() {
-    if (!_is_in_transaction) {
-        return Status::InternalError("Abort transaction before begin trans.");
+    if (_use_tranaction && _is_in_transaction) {
+        ODBC_DISPOSE(_dbc, SQL_HANDLE_DBC, SQLEndTran(SQL_HANDLE_DBC, _dbc, SQL_COMMIT),
+                     "commit transcation");
+        _is_in_transaction = false;
     }
-
-    ODBC_DISPOSE(_dbc, SQL_HANDLE_DBC, SQLEndTran(SQL_HANDLE_DBC, _dbc, SQL_COMMIT),
-                 "commit transcation");
-    _is_in_transaction = false;
 
     return Status::OK();
 }

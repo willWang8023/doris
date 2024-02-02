@@ -69,4 +69,116 @@ suite("test_outer_join_with_inline_view") {
         on a.k1 = b.k1
         order by a.v1; 
     """
+
+    sql """
+        drop table if exists subquery_table_1;
+    """
+
+    sql """
+        drop table if exists subquery_table_2;
+    """
+
+    sql """
+        drop table if exists subquery_table_3;
+    """
+
+    sql """
+        CREATE TABLE `subquery_table_1` (
+        `org_code` varchar(96) NULL 
+        ) ENGINE=OLAP
+        DUPLICATE KEY(`org_code`)
+        COMMENT 'OLAP'
+        DISTRIBUTED BY HASH(`org_code`) BUCKETS 2
+        PROPERTIES (
+        "replication_allocation" = "tag.location.default: 1",
+        "in_memory" = "false",
+        "storage_format" = "V2",
+        "disable_auto_compaction" = "false"
+        );
+    """
+
+    sql """
+        CREATE TABLE `subquery_table_2` (
+        `SKU_CODE` varchar(96) NULL 
+        ) ENGINE=OLAP
+        DUPLICATE KEY(`SKU_CODE`)
+        COMMENT 'OLAP'
+        DISTRIBUTED BY HASH(`SKU_CODE`) BUCKETS 2
+        PROPERTIES (
+        "replication_allocation" = "tag.location.default: 1",
+        "in_memory" = "false",
+        "storage_format" = "V2",
+        "disable_auto_compaction" = "false"
+        );
+    """
+
+    sql """
+        CREATE TABLE `subquery_table_3` (
+        `org_code` varchar(96) NULL, 
+        `bo_ql_in_advance` decimal(24, 6) NULL
+        ) ENGINE=OLAP
+        DUPLICATE KEY(`org_code`)
+        COMMENT 'OLAP'
+        DISTRIBUTED BY HASH(`org_code`) BUCKETS 2
+        PROPERTIES (
+        "replication_allocation" = "tag.location.default: 1",
+        "in_memory" = "false",
+        "storage_format" = "V2",
+        "disable_auto_compaction" = "false"
+        );
+    """
+
+    sql """
+        insert into subquery_table_1 values('1');
+    """
+
+    sql """
+        insert into subquery_table_2 values('1');
+    """
+
+    sql """
+        insert into subquery_table_3 values('1',1);
+    """
+
+    qt_select_with_agg_in_inline_view_and_outer_join """
+        select
+            count(cc.qlnm) as qlnm
+        FROM
+            subquery_table_1 aa
+            left join (
+                SELECT
+                    `s`.`SKU_CODE` AS `org_code`,
+                    coalesce(`t3`.`bo_ql_in_advance`, 0) AS `qlnm`
+                FROM
+                    `subquery_table_2` s
+                inner JOIN 
+                    `subquery_table_3` t3 
+                            ON `s`.`SKU_CODE` = `t3`.`org_code`
+            ) cc on aa.org_code = cc.org_code
+        group by
+            aa.org_code;
+    """
+
+    sql """set enable_nereids_planner=false;"""
+    sql """drop table if exists tableau_trans_wide_day_month_year;"""
+    sql """CREATE TABLE
+            `tableau_trans_wide_day_month_year` (
+                `business_type` varchar(200) NULL 
+            ) ENGINE = OLAP 
+            DUPLICATE KEY(`business_type`) 
+            DISTRIBUTED BY HASH(`business_type`) BUCKETS 15 
+            PROPERTIES (
+            "replication_allocation" = "tag.location.default: 1"
+            );"""
+    sql """INSERT INTO `tableau_trans_wide_day_month_year` VALUES (NULL);"""
+    qt_select_with_outerjoin_nullable """ SELECT '2023-10-07' a
+                                            FROM 
+                                                (SELECT t.business_type
+                                                FROM tableau_trans_wide_day_month_year t ) a full
+                                            JOIN 
+                                                (SELECT t.business_type
+                                                FROM tableau_trans_wide_day_month_year t
+                                                WHERE false ) c
+                                                ON nvl(a.business_type,'0')=nvl(c.business_type,'0'); """
+    sql """drop table if exists tableau_trans_wide_day_month_year;"""
 }

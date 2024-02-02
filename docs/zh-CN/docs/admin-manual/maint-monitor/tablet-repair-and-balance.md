@@ -28,7 +28,7 @@ under the License.
 
 从 0.9.0 版本开始，Doris 引入了优化后的副本管理策略，同时支持了更为丰富的副本状态查看工具。本文档主要介绍 Doris 数据副本均衡、修复方面的调度策略，以及副本管理的运维方法。帮助用户更方便的掌握和管理集群中的副本状态。
 
-> Colocation 属性的表的副本修复和均衡可以参阅[这里](../../advanced/join-optimization/colocation-join.md)
+> Colocation 属性的表的副本修复和均衡可以参阅[这里](../../query-acceleration/join-optimization/colocation-join.md)
 
 ## 名词解释
 
@@ -101,7 +101,7 @@ under the License.
 
 6. FORCE\_REDUNDANT
 
-    这是一个特殊状态。只会出现在当期望副本数大于等于可用节点数时，并且 Tablet 处于副本缺失状态时出现。这种情况下，需要先删除一个副本，以保证有可用节点用于创建新副本。
+    这是一个特殊状态。只会出现在当已存在副本数大于等于可用节点数，可用节点数大于等于期望副本数，并且存活的副本数小于期望副本数。这种情况下，需要先删除一个副本，以保证有可用节点用于创建新副本。
     
 7. COLOCATE\_MISMATCH
 
@@ -150,7 +150,7 @@ TabletChecker 作为常驻的后台进程，会定期检查所有分片的状态
 
 5. FORCE\_REDUNDANT
 
-    不同于 REDUNDANT，因为此时虽然 Tablet 有副本缺失，但是因为已经没有额外的可用节点用于创建新的副本了。所以此时必须先删除一个副本，以腾出一个可用节点用于创建新的副本。
+    不同于 REDUNDANT，因为此时虽然存活的副本数小于期望副本数，但是因为已经没有额外的可用节点用于创建新的副本了。所以此时必须先删除一个副本，以腾出一个可用节点用于创建新的副本。
     删除副本的顺序同 REDUNDANT。
     
 6. COLOCATE\_MISMATCH
@@ -216,7 +216,7 @@ TabletScheduler 里等待被调度的分片会根据状态不同，赋予不同�
 
 ## 副本均衡
 
-Doris 会自动进行集群内的副本均衡。目前支持两种均衡策略，负载/分区。负载均衡适合需要兼顾节点磁盘使用率和节点副本数量的场景；而分区均衡会使每个分区的副本都均匀分布在各个节点，避免热点，适合对分区读写要求比较高的场景。但是，分区均衡不考虑磁盘使用率，使用分区均衡时需要注意磁盘的使用情况。 策略只能在fe启动前配置[tablet_rebalancer_type](../config/fe-config.html#配置项列表 )  ，不支持运行时切换。
+Doris 会自动进行集群内的副本均衡。目前支持两种均衡策略，负载/分区。负载均衡适合需要兼顾节点磁盘使用率和节点副本数量的场景；而分区均衡会使每个分区的副本都均匀分布在各个节点，避免热点，适合对分区读写要求比较高的场景。但是，分区均衡不考虑磁盘使用率，使用分区均衡时需要注意磁盘的使用情况。 策略只能在fe启动前配置[tablet_rebalancer_type](../config/fe-config.md)  ，不支持运行时切换。
 
 ### 负载均衡
 
@@ -228,7 +228,7 @@ Doris 会自动进行集群内的副本均衡。目前支持两种均衡策略�
 
 我们用 ClusterLoadStatistics（CLS）表示一个 cluster 中各个 Backend 的负载均衡情况。TabletScheduler 根据这个统计值，来触发集群均衡。我们当前通过 **磁盘使用率** 和 **副本数量** 两个指标，为每个BE计算一个 loadScore，作为 BE 的负载分数。分数越高，表示该 BE 的负载越重。
 
-磁盘使用率和副本数量各有一个权重系数，分别为 **capacityCoefficient** 和 **replicaNumCoefficient**，其 **和衡为1**。其中 capacityCoefficient 会根据实际磁盘使用率动态调整。当一个 BE 的总体磁盘使用率在 50% 以下，则 capacityCoefficient 值为 0.5，如果磁盘使用率在 75%（可通过 FE 配置项 `capacity_used_percent_high_water` 配置）以上，则值为 1。如果使用率介于 50% ~ 75% 之间，则该权重系数平滑增加，公式为：
+磁盘使用率和副本数量各有一个权重系数，分别为 **capacityCoefficient** 和 **replicaNumCoefficient**，其 **和恒为1**。其中 capacityCoefficient 会根据实际磁盘使用率动态调整。当一个 BE 的总体磁盘使用率在 50% 以下，则 capacityCoefficient 值为 0.5，如果磁盘使用率在 75%（可通过 FE 配置项 `capacity_used_percent_high_water` 配置）以上，则值为 1。如果使用率介于 50% ~ 75% 之间，则该权重系数平滑增加，公式为：
 
 `capacityCoefficient= 2 * 磁盘使用率 - 0.5`
 
@@ -253,7 +253,7 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
 
 ## 资源控制
 
-无论是副本修复还是均衡，都是通过副本在各个 BE 之间拷贝完成的。如果同一台 BE 同一时间执行过多的任务，则会带来不小的 IO 压力。因此，Doris 在调度时控制了每个节点上能够执行的任务数目。最小的资源控制单位是磁盘（即在 be.conf 中指定的一个数据路径）。我们默认为每块磁盘配置两个 slot 用于副本修复。一个 clone 任务会占用源端和目的端各一个 slot。如果 slot 数目为零，则不会再对这块磁盘分配任务。该 slot 个数可以通过 FE 的 `schedule_slot_num_per_path` 参数配置。 
+无论是副本修复还是均衡，都是通过副本在各个 BE 之间拷贝完成的。如果同一台 BE 同一时间执行过多的任务，则会带来不小的 IO 压力。因此，Doris 在调度时控制了每个节点上能够执行的任务数目。最小的资源控制单位是磁盘（即在 be.conf 中指定的一个数据路径）。我们默认为每块磁盘配置两个 slot 用于副本修复。一个 clone 任务会占用源端和目的端各一个 slot。如果 slot 数目为零，则不会再对这块磁盘分配任务。该 slot 个数可以通过 FE 的 `schedule_slot_num_per_hdd_path` 或者 `schedule_slot_num_per_ssd_path` 参数配置。 
 
 另外，我们默认为每块磁盘提供 2 个单独的 slot 用于均衡任务。目的是防止高负载的节点因为 slot 被修复任务占用，而无法通过均衡释放空间。
 
@@ -298,7 +298,7 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
    
     用户可以通过以下命令查看指定表或分区的副本状态，并可以通过 WHERE 语句对状态进行过滤。如查看表 tbl1 中，分区 p1 和 p2 上状态为 OK 的副本：
     
-    `ADMIN SHOW REPLICA STATUS FROM tbl1 PARTITION (p1, p2) WHERE STATUS = "OK";`
+    `SHOW REPLICA STATUS FROM tbl1 PARTITION (p1, p2) WHERE STATUS = "OK";`
     
     ```
     +----------+-----------+-----------+---------+-------------------+--------------------+------------------+------------+------------+-------+--------+--------+
@@ -313,9 +313,9 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
     +----------+-----------+-----------+---------+-------------------+--------------------+------------------+------------+------------+-------+--------+--------+
     ```
 
-    这里会展示所有副本的状态。其中 `IsBad` 列为 `true` 则表示副本已经损坏。而 `Status` 列则会显示另外的其他状态。具体的状态说明，可以通过 `HELP ADMIN SHOW REPLICA STATUS;` 查看帮助。
+    这里会展示所有副本的状态。其中 `IsBad` 列为 `true` 则表示副本已经损坏。而 `Status` 列则会显示另外的其他状态。具体的状态说明，可以通过 `HELP SHOW REPLICA STATUS;` 查看帮助。
     
-    `ADMIN SHOW REPLICA STATUS` 命令主要用于查看副本的健康状态。用户还可以通过以下命令查看指定表中副本的一些额外信息：
+    `SHOW REPLICA STATUS` 命令主要用于查看副本的健康状态。用户还可以通过以下命令查看指定表中副本的一些额外信息：
     
     `SHOW TABLETS FROM tbl1;`
     
@@ -335,7 +335,7 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
 
     此外，用户也可以通过以下命令，查看指定表或分区的副本分布情况，来检查副本分布是否均匀。
     
-    `ADMIN SHOW REPLICA DISTRIBUTION FROM tbl1;`
+    `SHOW REPLICA DISTRIBUTION FROM tbl1;`
     
     ```
     +-----------+------------+-------+---------+
@@ -441,7 +441,7 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
 
     通过以下命令可以查看集群当前的负载情况：
     
-    `SHOW PROC '/cluster_balance/cluster_load_stat';`
+    `SHOW PROC '/cluster_balance/cluster_load_stat/location_default';`
     
     首先看到的是对不同存储介质的划分：
     
@@ -456,7 +456,7 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
     
     点击某一种存储介质，可以看到包含该存储介质的 BE 节点的均衡状态：
     
-    `SHOW PROC '/cluster_balance/cluster_load_stat/HDD';`
+    `SHOW PROC '/cluster_balance/cluster_load_stat/location_default/HDD';`
     
     ```
     +----------+-----------------+-----------+---------------+----------------+-------------+------------+----------+-----------+--------------------+-------+
@@ -486,7 +486,7 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
 
     用户可以进一步查看某个 BE 上各个路径的使用率，比如 ID 为 10001 这个 BE：
 
-    `SHOW PROC '/cluster_balance/cluster_load_stat/HDD/10001';`
+    `SHOW PROC '/cluster_balance/cluster_load_stat/location_default/HDD/10001';`
 
     ```
     +------------------+------------------+---------------+---------------+---------+--------+----------------------+
@@ -628,7 +628,7 @@ TabletScheduler 在每轮调度时，都会通过 LoadBalancer 来选择一定�
 * storage\_high\_watermark\_usage\_percent 和 storage\_min\_left\_capacity\_bytes
 
     * 说明：这两个参数，分别表示一个磁盘的最大空间使用率上限，以及最小的空间剩余下限。当一块磁盘的空间使用率大于上限，或者剩余空间小于下限时，该磁盘将不再作为均衡调度的目的地址。
-    * 默认值：0.85 和 1048576000 （1GB）
+    * 默认值：0.85 和 2097152000 （2GB）
     * 重要性：中
     
 * disable\_balance

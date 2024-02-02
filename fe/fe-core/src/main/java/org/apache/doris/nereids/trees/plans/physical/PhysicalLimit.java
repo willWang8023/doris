@@ -21,11 +21,14 @@ import org.apache.doris.nereids.memo.GroupExpression;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.properties.PhysicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
+import org.apache.doris.nereids.trees.expressions.Slot;
+import org.apache.doris.nereids.trees.plans.LimitPhase;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.algebra.Limit;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
 import org.apache.doris.nereids.util.Utils;
+import org.apache.doris.statistics.Statistics;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -38,14 +41,14 @@ import java.util.Optional;
  * Physical limit plan
  */
 public class PhysicalLimit<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_TYPE> implements Limit {
+    private final LimitPhase phase;
     private final long limit;
-
     private final long offset;
 
     public PhysicalLimit(long limit, long offset,
-            LogicalProperties logicalProperties,
+            LimitPhase phase, LogicalProperties logicalProperties,
             CHILD_TYPE child) {
-        this(limit, offset, Optional.empty(), logicalProperties, child);
+        this(limit, offset, phase, Optional.empty(), logicalProperties, child);
     }
 
     /**
@@ -56,11 +59,12 @@ public class PhysicalLimit<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_
      * @param offset the number of tuples skipped.
      */
     public PhysicalLimit(long limit, long offset,
-            Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
+            LimitPhase phase, Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
             CHILD_TYPE child) {
         super(PlanType.PHYSICAL_LIMIT, groupExpression, logicalProperties, child);
         this.limit = limit;
         this.offset = offset;
+        this.phase = phase;
     }
 
     /**
@@ -69,12 +73,16 @@ public class PhysicalLimit<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_
      *
      * @param limit the number of tuples retrieved.
      * @param offset the number of tuples skipped.
+     * @param phase the phase of 2-phase limit.
      */
-    public PhysicalLimit(long limit, long offset, Optional<GroupExpression> groupExpression,
-            LogicalProperties logicalProperties, PhysicalProperties physicalProperties, CHILD_TYPE child) {
-        super(PlanType.PHYSICAL_LIMIT, groupExpression, logicalProperties, physicalProperties, child);
+    public PhysicalLimit(long limit, long offset, LimitPhase phase, Optional<GroupExpression> groupExpression,
+            LogicalProperties logicalProperties, PhysicalProperties physicalProperties,
+            Statistics statistics, CHILD_TYPE child) {
+        super(PlanType.PHYSICAL_LIMIT, groupExpression, logicalProperties, physicalProperties, statistics,
+                child);
         this.limit = limit;
         this.offset = offset;
+        this.phase = phase;
     }
 
     public long getLimit() {
@@ -85,10 +93,24 @@ public class PhysicalLimit<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_
         return offset;
     }
 
+    public LimitPhase getPhase() {
+        return phase;
+    }
+
+    public boolean isGlobal() {
+        return phase == LimitPhase.GLOBAL;
+    }
+
+    public Plan withLimit(long limit) {
+        return new PhysicalLimit<>(limit, offset, phase, groupExpression, getLogicalProperties(),
+                physicalProperties, statistics, children.get(0));
+    }
+
     @Override
     public Plan withChildren(List<Plan> children) {
         Preconditions.checkArgument(children.size() == 1);
-        return new PhysicalLimit<>(limit, offset, getLogicalProperties(), children.get(0));
+        return new PhysicalLimit<>(limit, offset, phase, groupExpression, getLogicalProperties(),
+                physicalProperties, statistics, children.get(0));
     }
 
     @Override
@@ -98,17 +120,21 @@ public class PhysicalLimit<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_
 
     @Override
     public PhysicalLimit<CHILD_TYPE> withGroupExpression(Optional<GroupExpression> groupExpression) {
-        return new PhysicalLimit<>(limit, offset, groupExpression, getLogicalProperties(), child());
+        return new PhysicalLimit<>(limit, offset, phase, groupExpression, getLogicalProperties(), child());
     }
 
     @Override
-    public PhysicalLimit<CHILD_TYPE> withLogicalProperties(Optional<LogicalProperties> logicalProperties) {
-        return new PhysicalLimit<>(limit, offset, logicalProperties.get(), child());
+    public Plan withGroupExprLogicalPropChildren(Optional<GroupExpression> groupExpression,
+            Optional<LogicalProperties> logicalProperties, List<Plan> children) {
+        Preconditions.checkArgument(children.size() == 1);
+        return new PhysicalLimit<>(limit, offset, phase, groupExpression, logicalProperties.get(), children.get(0));
     }
 
     @Override
-    public PhysicalLimit<CHILD_TYPE> withPhysicalProperties(PhysicalProperties physicalProperties) {
-        return new PhysicalLimit<>(limit, offset, groupExpression, getLogicalProperties(), physicalProperties, child());
+    public PhysicalLimit<CHILD_TYPE> withPhysicalPropertiesAndStats(PhysicalProperties physicalProperties,
+            Statistics statistics) {
+        return new PhysicalLimit<>(limit, offset, phase, groupExpression, getLogicalProperties(), physicalProperties,
+                statistics, child());
     }
 
     @Override
@@ -120,7 +146,7 @@ public class PhysicalLimit<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_
             return false;
         }
         PhysicalLimit that = (PhysicalLimit) o;
-        return offset == that.offset && limit == that.limit;
+        return offset == that.offset && limit == that.limit && phase == that.phase;
     }
 
     @Override
@@ -135,9 +161,27 @@ public class PhysicalLimit<CHILD_TYPE extends Plan> extends PhysicalUnary<CHILD_
 
     @Override
     public String toString() {
-        return Utils.toSqlString("PhysicalLimit",
+        return Utils.toSqlString("PhysicalLimit[" + id.asInt() + "]" + getGroupIdWithPrefix(),
                 "limit", limit,
-                "offset", offset
+                "offset", offset,
+                "phase", phase,
+                "stats", statistics
         );
+    }
+
+    @Override
+    public String shapeInfo() {
+        return this.getClass().getSimpleName() + "[" + phase + "]";
+    }
+
+    @Override
+    public List<Slot> computeOutput() {
+        return child().getOutput();
+    }
+
+    @Override
+    public PhysicalLimit<CHILD_TYPE> resetLogicalProperties() {
+        return new PhysicalLimit<>(limit, offset, phase, groupExpression, null, physicalProperties,
+                statistics, child());
     }
 }

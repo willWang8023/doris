@@ -18,8 +18,6 @@ suite("test_materialized_view_array", "rollup") {
     def tableName = "tbl_test_materialized_view_array"
 
     def create_test_table = {testTable ->
-        // multi-line sql
-        sql "ADMIN SET FRONTEND CONFIG ('enable_array_type' = 'true')"
         
         def result1 = sql """
             CREATE TABLE IF NOT EXISTS ${tableName} (
@@ -68,8 +66,8 @@ suite("test_materialized_view_array", "rollup") {
         
         create_test_table.call(tableName)
         test {
-            sql "CREATE MATERIALIZED VIEW idx AS select k1, k2, k3, k4, k5 from ${tableName}"
-            exception "errCode = 2, detailMessage = The array column[`k2` array<smallint(6)> NULL] not support to create materialized view"
+            sql "CREATE MATERIALIZED VIEW idx AS select k2,k1, k3, k4, k5 from ${tableName}"
+            exception "errCode = 2, detailMessage = The ARRAY column[`mv_k2` ARRAY<SMALLINT> NULL] not support to create materialized view"
         }
     } finally {
         try_sql("DROP TABLE IF EXISTS ${tableName}")

@@ -17,9 +17,21 @@
 
 #include "runtime/stream_load/stream_load_context.h"
 
+#include <gen_cpp/BackendService_types.h>
+#include <rapidjson/document.h>
+#include <rapidjson/encodings.h>
+#include <rapidjson/prettywriter.h>
+#include <rapidjson/rapidjson.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
+
+#include <new>
 #include <sstream>
 
+#include "common/logging.h"
+
 namespace doris {
+using namespace ErrorCode;
 
 std::string StreamLoadContext::to_json() const {
     rapidjson::StringBuffer s;
@@ -34,20 +46,29 @@ std::string StreamLoadContext::to_json() const {
     writer.Key("Label");
     writer.String(label.c_str());
 
-    writer.Key("TwoPhaseCommit");
-    std::string need_two_phase_commit = two_phase_commit ? "true" : "false";
-    writer.String(need_two_phase_commit.c_str());
+    // comment
+    writer.Key("Comment");
+    writer.String(load_comment.c_str());
+
+    if (!group_commit) {
+        writer.Key("TwoPhaseCommit");
+        std::string need_two_phase_commit = two_phase_commit ? "true" : "false";
+        writer.String(need_two_phase_commit.c_str());
+    } else {
+        writer.Key("GroupCommit");
+        writer.Bool(true);
+    }
 
     // status
     writer.Key("Status");
     switch (status.code()) {
-    case TStatusCode::OK:
+    case OK:
         writer.String("Success");
         break;
-    case TStatusCode::PUBLISH_TIMEOUT:
+    case PUBLISH_TIMEOUT:
         writer.String("Publish Timeout");
         break;
-    case TStatusCode::LABEL_ALREADY_EXISTS:
+    case LABEL_ALREADY_EXISTS:
         writer.String("Label Already Exists");
         writer.Key("ExistingJobStatus");
         writer.String(existing_job_status.c_str());
@@ -61,7 +82,7 @@ std::string StreamLoadContext::to_json() const {
     if (status.ok()) {
         writer.String("OK");
     } else {
-        writer.String(status.get_error_msg().c_str());
+        writer.String(status.to_string().c_str());
     }
     // number_load_rows
     writer.Key("NumberTotalRows");
@@ -76,16 +97,20 @@ std::string StreamLoadContext::to_json() const {
     writer.Int64(receive_bytes);
     writer.Key("LoadTimeMs");
     writer.Int64(load_cost_millis);
-    writer.Key("BeginTxnTimeMs");
-    writer.Int64(begin_txn_cost_nanos / 1000000);
+    if (!group_commit) {
+        writer.Key("BeginTxnTimeMs");
+        writer.Int64(begin_txn_cost_nanos / 1000000);
+    }
     writer.Key("StreamLoadPutTimeMs");
     writer.Int64(stream_load_put_cost_nanos / 1000000);
     writer.Key("ReadDataTimeMs");
     writer.Int64(read_data_cost_nanos / 1000000);
     writer.Key("WriteDataTimeMs");
     writer.Int(write_data_cost_nanos / 1000000);
-    writer.Key("CommitAndPublishTimeMs");
-    writer.Int64(commit_and_publish_txn_cost_nanos / 1000000);
+    if (!group_commit) {
+        writer.Key("CommitAndPublishTimeMs");
+        writer.Int64(commit_and_publish_txn_cost_nanos / 1000000);
+    }
 
     if (!error_url.empty()) {
         writer.Key("ErrorURL");
@@ -133,6 +158,12 @@ std::string StreamLoadContext::prepare_stream_load_record(const std::string& str
     client_ip_value.SetString(auth.user_ip.c_str(), auth.user_ip.size());
     if (!client_ip_value.IsNull()) {
         document.AddMember("ClientIp", client_ip_value, allocator);
+    }
+
+    rapidjson::Value comment_value(rapidjson::kStringType);
+    comment_value.SetString(load_comment.c_str(), load_comment.size());
+    if (!comment_value.IsNull()) {
+        document.AddMember("Comment", comment_value, allocator);
     }
 
     document.AddMember("StartTime", start_millis, allocator);
@@ -245,6 +276,12 @@ void StreamLoadContext::parse_stream_load_record(const std::string& stream_load_
         ss << ", FinishTime: " << finish_time.GetInt64();
     }
 
+    if (document.HasMember("Comment")) {
+        const rapidjson::Value& comment_value = document["Comment"];
+        stream_load_item.__set_comment(comment_value.GetString());
+        ss << ", Comment: " << comment_value.GetString();
+    }
+
     VLOG(1) << "parse json from rocksdb. " << ss.str();
 }
 
@@ -267,10 +304,10 @@ std::string StreamLoadContext::to_json_for_mini_load() const {
     bool show_ok = true;
     writer.Key("status");
     switch (status.code()) {
-    case TStatusCode::OK:
+    case OK:
         writer.String("Success");
         break;
-    case TStatusCode::PUBLISH_TIMEOUT:
+    case PUBLISH_TIMEOUT:
         // treat PUBLISH_TIMEOUT as OK in mini load
         writer.String("Success");
         break;
@@ -284,7 +321,7 @@ std::string StreamLoadContext::to_json_for_mini_load() const {
     if (status.ok() || show_ok) {
         writer.String("OK");
     } else {
-        writer.String(status.get_error_msg().c_str());
+        writer.String(status.to_string().c_str());
     }
     writer.EndObject();
     return s.GetString();

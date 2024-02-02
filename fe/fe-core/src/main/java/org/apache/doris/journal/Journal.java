@@ -47,7 +47,15 @@ public interface Journal {
     public JournalCursor read(long fromKey, long toKey);
 
     // Write a journal and sync to disk
-    public void write(short op, Writable writable) throws IOException;
+    public long write(short op, Writable writable) throws IOException;
+
+    // Write a set of journal to disk in batch.
+    //
+    // Return the first id of the batched journals.
+    public long write(JournalBatch batch) throws IOException;
+
+    // Get current journal number
+    public long getJournalNum();
 
     // Delete journals whose max id is less than deleteToJournalId
     public void deleteJournals(long deleteJournalToId);

@@ -32,11 +32,17 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.gson.annotations.SerializedName;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.File;
+import java.util.Collections;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Spark resource for etl or query.
@@ -80,6 +86,10 @@ public class SparkResource extends Resource {
     private static final String SPARK_YARN_RESOURCE_MANAGER_ADDRESS = "spark.hadoop.yarn.resourcemanager.address";
     private static final String SPARK_FS_DEFAULT_FS = "spark.hadoop.fs.defaultFS";
     private static final String YARN_RESOURCE_MANAGER_ADDRESS = "yarn.resourcemanager.address";
+    private static final String SPARK_YARN_RESOURCE_MANAGER_HA_ENABLED = "spark.hadoop.yarn.resourcemanager.ha.enabled";
+    private static final String SPARK_YARN_RESOURCE_MANAGER_HA_RMIDS = "spark.hadoop.yarn.resourcemanager.ha.rm-ids";
+    private static final String YARN_RESOURCE_MANAGER_ADDRESS_FOMART = "spark.hadoop.yarn.resourcemanager.address.%s";
+    private static final String YARN_RESOURCE_MANAGER_HOSTNAME_FORMAT = "spark.hadoop.yarn.resourcemanager.hostname.%s";
 
     public enum DeployMode {
         CLUSTER,
@@ -154,16 +164,20 @@ public class SparkResource extends Resource {
     }
 
     public Map<String, String> getEnvConfigsWithoutPrefix() {
-        Map<String, String> envConfig = Maps.newHashMap();
-        if (envConfigs != null) {
-            for (Map.Entry<String, String> entry : envConfigs.entrySet()) {
-                if (entry.getKey().startsWith(ENV_PREFIX)) {
-                    String key = entry.getKey().substring(ENV_PREFIX.length());
-                    envConfig.put(key, entry.getValue());
-                }
-            }
-        }
-        return envConfig;
+        return Stream.concat(
+                        getSystemEnvConfigs().entrySet().stream(),
+                        Optional.ofNullable(envConfigs).orElse(Collections.emptyMap()).entrySet().stream()
+                )
+                .filter(entry -> entry.getKey().startsWith(ENV_PREFIX))
+                .collect(Collectors.toMap(
+                        entry -> entry.getKey().substring(ENV_PREFIX.length()),
+                        Entry::getValue,
+                        (oldValue, newValue) -> newValue
+                ));
+    }
+
+    public Map<String, String> getSystemEnvConfigs() {
+        return System.getenv();
     }
 
     public Pair<String, String> getYarnResourcemanagerAddressPair() {
@@ -283,11 +297,31 @@ public class SparkResource extends Resource {
             throw new DdlException("Missing " + SPARK_SUBMIT_DEPLOY_MODE + " in properties");
         }
         // if deploy machines do not set HADOOP_CONF_DIR env, we should set these configs blow
-        if ((!sparkConfigs.containsKey(SPARK_YARN_RESOURCE_MANAGER_ADDRESS)
-                || !sparkConfigs.containsKey(SPARK_FS_DEFAULT_FS))
-                && isYarnMaster()) {
-            throw new DdlException("Missing (" + SPARK_YARN_RESOURCE_MANAGER_ADDRESS + " and " + SPARK_FS_DEFAULT_FS
-                                           + ") in yarn master");
+        if (isYarnMaster()) {
+            if (!sparkConfigs.containsKey(SPARK_FS_DEFAULT_FS)) {
+                throw new DdlException("Missing (" + SPARK_FS_DEFAULT_FS + ") in yarn master");
+            }
+
+            String haEnabled = sparkConfigs.get(SPARK_YARN_RESOURCE_MANAGER_HA_ENABLED);
+            if (StringUtils.isNotEmpty(haEnabled) && "true".equals(haEnabled)) {
+                if (StringUtils.isEmpty(SPARK_YARN_RESOURCE_MANAGER_HA_RMIDS)) {
+                    throw new DdlException("Missing (" + SPARK_YARN_RESOURCE_MANAGER_HA_RMIDS + ") in yarn master, "
+                        + "when " + SPARK_YARN_RESOURCE_MANAGER_HA_ENABLED + "=true.");
+                }
+
+                String[] haIds = sparkConfigs.get(SPARK_YARN_RESOURCE_MANAGER_HA_RMIDS).split(",");
+                for (String haId : haIds) {
+                    String addressKey = String.format(YARN_RESOURCE_MANAGER_ADDRESS_FOMART, haId);
+                    String hostnameKey = String.format(YARN_RESOURCE_MANAGER_HOSTNAME_FORMAT, haId);
+                    if (!sparkConfigs.containsKey(addressKey) && !sparkConfigs.containsKey(hostnameKey)) {
+                        throw new DdlException("Missing " + addressKey + " or " + hostnameKey + " in yarn master, "
+                            + "when " + SPARK_YARN_RESOURCE_MANAGER_HA_ENABLED + "=true.");
+                    }
+                }
+            } else if (!sparkConfigs.containsKey(SPARK_YARN_RESOURCE_MANAGER_ADDRESS)) {
+                throw new DdlException("Missing (" + SPARK_YARN_RESOURCE_MANAGER_ADDRESS + ") in yarn master, "
+                    + "or not turned on ha.");
+            }
         }
 
         // check working dir and broker
@@ -346,6 +380,7 @@ public class SparkResource extends Resource {
     @Override
     public void modifyProperties(Map<String, String> properties) throws DdlException {
         updateProperties(properties);
+        super.modifyProperties(properties);
     }
 
     @Override

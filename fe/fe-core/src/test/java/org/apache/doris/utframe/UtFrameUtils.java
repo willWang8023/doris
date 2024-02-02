@@ -18,14 +18,20 @@
 package org.apache.doris.utframe;
 
 import org.apache.doris.analysis.Analyzer;
+import org.apache.doris.analysis.CreateDbStmt;
+import org.apache.doris.analysis.CreateTableStmt;
 import org.apache.doris.analysis.ExplainOptions;
 import org.apache.doris.analysis.QueryStmt;
+import org.apache.doris.analysis.ShowCreateTableStmt;
+import org.apache.doris.analysis.ShowPartitionsStmt;
 import org.apache.doris.analysis.SqlParser;
 import org.apache.doris.analysis.SqlScanner;
 import org.apache.doris.analysis.StatementBase;
 import org.apache.doris.analysis.UserIdentity;
 import org.apache.doris.catalog.DiskInfo;
 import org.apache.doris.catalog.Env;
+import org.apache.doris.catalog.Replica;
+import org.apache.doris.catalog.TabletMeta;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
@@ -35,9 +41,10 @@ import org.apache.doris.planner.Planner;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.OriginStatement;
 import org.apache.doris.qe.QueryState;
+import org.apache.doris.qe.ShowExecutor;
+import org.apache.doris.qe.ShowResultSet;
 import org.apache.doris.qe.StmtExecutor;
 import org.apache.doris.system.Backend;
-import org.apache.doris.system.SystemInfoService;
 import org.apache.doris.thrift.TNetworkAddress;
 import org.apache.doris.utframe.MockedBackendFactory.DefaultBeThriftServiceImpl;
 import org.apache.doris.utframe.MockedBackendFactory.DefaultHeartbeatServiceImpl;
@@ -60,8 +67,8 @@ import java.io.StringReader;
 import java.net.DatagramSocket;
 import java.net.ServerSocket;
 import java.net.SocketException;
-import java.nio.channels.SocketChannel;
 import java.nio.file.Files;
+import java.util.ConcurrentModificationException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -75,9 +82,7 @@ public class UtFrameUtils {
 
     // Help to create a mocked ConnectContext.
     public static ConnectContext createDefaultCtx(UserIdentity userIdentity, String remoteIp) throws IOException {
-        SocketChannel channel = SocketChannel.open();
-        ConnectContext ctx = new ConnectContext(channel);
-        ctx.setCluster(SystemInfoService.DEFAULT_CLUSTER);
+        ConnectContext ctx = new ConnectContext();
         ctx.setCurrentUserIdentity(userIdentity);
         ctx.setQualifiedUser(userIdentity.getQualifiedUser());
         ctx.setRemoteIP(remoteIp);
@@ -149,6 +154,19 @@ public class UtFrameUtils {
 
     public static int startFEServer(String runningDir) throws EnvVarNotSetException, IOException,
             FeStartException, NotInitException, DdlException, InterruptedException {
+        IOException exception = null;
+        for (int i = 0; i <= 3; i++) {
+            try {
+                return startFEServerWithoutRetry(runningDir);
+            } catch (IOException ignore) {
+                exception = ignore;
+            }
+        }
+        throw exception;
+    }
+
+    private static int startFEServerWithoutRetry(String runningDir) throws EnvVarNotSetException, IOException,
+            FeStartException, NotInitException {
         // get DORIS_HOME
         String dorisHome = System.getenv("DORIS_HOME");
         if (Strings.isNullOrEmpty(dorisHome)) {
@@ -157,14 +175,23 @@ public class UtFrameUtils {
         Config.plugin_dir = dorisHome + "/plugins";
         Config.custom_config_dir = dorisHome + "/conf";
         Config.edit_log_type = "local";
+        Config.disable_decimalv2 = false;
+        Config.disable_datev1 = false;
         File file = new File(Config.custom_config_dir);
         if (!file.exists()) {
             file.mkdir();
+        }
+        if (null != System.getenv("DORIS_HOME")) {
+            File metaDir = new File(Config.meta_dir);
+            if (!metaDir.exists()) {
+                metaDir.mkdir();
+            }
         }
 
         int feHttpPort = findValidPort();
         int feRpcPort = findValidPort();
         int feQueryPort = findValidPort();
+        int arrowFlightSqlPort = findValidPort();
         int feEditLogPort = findValidPort();
 
         // start fe in "DORIS_HOME/fe/mocked/"
@@ -174,6 +201,7 @@ public class UtFrameUtils {
         feConfMap.put("http_port", String.valueOf(feHttpPort));
         feConfMap.put("rpc_port", String.valueOf(feRpcPort));
         feConfMap.put("query_port", String.valueOf(feQueryPort));
+        feConfMap.put("arrow_flight_sql_port", String.valueOf(arrowFlightSqlPort));
         feConfMap.put("edit_log_port", String.valueOf(feEditLogPort));
         feConfMap.put("tablet_create_timeout_second", "10");
         frontend.init(dorisHome + "/" + runningDir, feConfMap);
@@ -188,6 +216,7 @@ public class UtFrameUtils {
 
     public static void createDorisCluster(String runningDir, int backendNum) throws EnvVarNotSetException, IOException,
             FeStartException, NotInitException, DdlException, InterruptedException {
+        FeConstants.enableInternalSchemaDb = false;
         int feRpcPort = startFEServer(runningDir);
         List<Backend> bes = Lists.newArrayList();
         for (int i = 0; i < backendNum; i++) {
@@ -222,25 +251,44 @@ public class UtFrameUtils {
         // set runningUnitTest to true, so that for ut,
         // the agent task will be sent to "127.0.0.1" to make cluster running well.
         FeConstants.runningUnitTest = true;
+        FeConstants.enableInternalSchemaDb = false;
         int feRpcPort = startFEServer(runningDir);
+        List<Backend> bes = Lists.newArrayList();
         for (int i = 0; i < backendNum; i++) {
             String host = "127.0.0." + (i + 1);
             createBackend(host, feRpcPort);
         }
+        System.out.println("after create backend");
+        checkBEHeartbeat(bes);
         // sleep to wait first heartbeat
-        Thread.sleep(6000);
+        // Thread.sleep(6000);
+        System.out.println("after create backend2");
     }
 
     public static Backend createBackend(String beHost, int feRpcPort) throws IOException, InterruptedException {
+        IOException exception = null;
+        for (int i = 0; i <= 3; i++) {
+            try {
+                return createBackendWithoutRetry(beHost, feRpcPort);
+            } catch (IOException ignore) {
+                exception = ignore;
+            }
+        }
+        throw exception;
+    }
+
+    private static Backend createBackendWithoutRetry(String beHost, int feRpcPort) throws IOException {
         int beHeartbeatPort = findValidPort();
         int beThriftPort = findValidPort();
         int beBrpcPort = findValidPort();
         int beHttpPort = findValidPort();
+        int beArrowFlightSqlPort = findValidPort();
 
         // start be
+        MockedBackendFactory.BeThriftService beThriftService = new DefaultBeThriftServiceImpl();
         MockedBackend backend = MockedBackendFactory.createBackend(beHost, beHeartbeatPort, beThriftPort, beBrpcPort,
-                beHttpPort, new DefaultHeartbeatServiceImpl(beThriftPort, beHttpPort, beBrpcPort),
-                new DefaultBeThriftServiceImpl(), new DefaultPBackendServiceImpl());
+                beHttpPort, beArrowFlightSqlPort, new DefaultHeartbeatServiceImpl(beThriftPort, beHttpPort, beBrpcPort, beArrowFlightSqlPort),
+                beThriftService, new DefaultPBackendServiceImpl());
         backend.setFeAddress(new TNetworkAddress("127.0.0.1", feRpcPort));
         backend.start();
 
@@ -248,17 +296,20 @@ public class UtFrameUtils {
         Backend be = new Backend(Env.getCurrentEnv().getNextId(), backend.getHost(), backend.getHeartbeatPort());
         Map<String, DiskInfo> disks = Maps.newHashMap();
         DiskInfo diskInfo1 = new DiskInfo("/path" + be.getId());
-        diskInfo1.setTotalCapacityB(1000000);
-        diskInfo1.setAvailableCapacityB(500000);
+        diskInfo1.setTotalCapacityB(10L << 30);
+        diskInfo1.setAvailableCapacityB(5L << 30);
         diskInfo1.setDataUsedCapacityB(480000);
+        diskInfo1.setPathHash(be.getId());
         disks.put(diskInfo1.getRootPath(), diskInfo1);
         be.setDisks(ImmutableMap.copyOf(disks));
         be.setAlive(true);
-        be.setOwnerClusterName(SystemInfoService.DEFAULT_CLUSTER);
         be.setBePort(beThriftPort);
         be.setHttpPort(beHttpPort);
         be.setBrpcPort(beBrpcPort);
+        be.setArrowFlightSqlPort(beArrowFlightSqlPort);
+        beThriftService.setBackendInFe(be);
         Env.getCurrentSystemInfo().addBackend(be);
+
         return be;
     }
 
@@ -280,7 +331,7 @@ public class UtFrameUtils {
                     datagramSocket.setReuseAddress(true);
                     break;
                 } catch (SocketException e) {
-                    System.out.println("The port " + port  + " is invalid and try another port.");
+                    System.out.println("The port " + port + " is invalid and try another port.");
                 }
             } catch (IOException e) {
                 throw new IllegalStateException("Could not find a free TCP/IP port to start HTTP Server on");
@@ -301,7 +352,7 @@ public class UtFrameUtils {
         stmtExecutor.execute();
         if (ctx.getState().getStateType() != QueryState.MysqlStateType.ERR) {
             Planner planner = stmtExecutor.planner();
-            return planner.getExplainString(new ExplainOptions(isVerbose, false));
+            return planner.getExplainString(new ExplainOptions(isVerbose, false, false));
         } else {
             return ctx.getState().getErrorMessage();
         }
@@ -330,8 +381,8 @@ public class UtFrameUtils {
     }
 
     public static String getStmtDigest(ConnectContext connectContext, String originStmt) throws Exception {
-        SqlScanner input =
-                new SqlScanner(new StringReader(originStmt), connectContext.getSessionVariable().getSqlMode());
+        SqlScanner input = new SqlScanner(new StringReader(originStmt),
+                connectContext.getSessionVariable().getSqlMode());
         SqlParser parser = new SqlParser(input);
         StatementBase statementBase = SqlParserUtils.getFirstStmt(parser);
         Preconditions.checkState(statementBase instanceof QueryStmt);
@@ -344,5 +395,71 @@ public class UtFrameUtils {
         String realNodeName = idx + ":" + nodeName;
         String realVNodeName = idx + ":V" + nodeName;
         return planResult.contains(realNodeName) || planResult.contains(realVNodeName);
+    }
+
+    public static void createDatabase(ConnectContext ctx, String db) throws Exception {
+        String createDbStmtStr = "CREATE DATABASE " + db;
+        CreateDbStmt createDbStmt = (CreateDbStmt) parseAndAnalyzeStmt(createDbStmtStr, ctx);
+        Env.getCurrentEnv().createDb(createDbStmt);
+    }
+
+    public static void createTable(ConnectContext ctx, String sql) throws Exception {
+        try {
+            createTables(ctx, sql);
+        } catch (ConcurrentModificationException e) {
+            e.printStackTrace();
+            throw e;
+        }
+    }
+
+    public static void createTables(ConnectContext ctx, String... sqls) throws Exception {
+        for (String sql : sqls) {
+            CreateTableStmt stmt = (CreateTableStmt) parseAndAnalyzeStmt(sql, ctx);
+            Env.getCurrentEnv().createTable(stmt);
+        }
+        updateReplicaPathHash();
+    }
+
+    public static ShowResultSet showCreateTable(ConnectContext ctx, String sql) throws Exception {
+        ShowCreateTableStmt stmt = (ShowCreateTableStmt) parseAndAnalyzeStmt(sql, ctx);
+        ShowExecutor executor = new ShowExecutor(ctx, stmt);
+        return executor.execute();
+    }
+
+    public static ShowResultSet showCreateTableByName(ConnectContext ctx, String table) throws Exception {
+        String sql = "show create table " + table;
+        return showCreateTable(ctx, sql);
+    }
+
+    public static ShowResultSet showPartitions(ConnectContext ctx, String sql) throws Exception {
+        ShowPartitionsStmt stmt = (ShowPartitionsStmt) parseAndAnalyzeStmt(sql, ctx);
+        ShowExecutor executor = new ShowExecutor(ctx, stmt);
+        return executor.execute();
+    }
+
+    public static ShowResultSet showPartitionsByName(ConnectContext ctx, String table) throws Exception {
+        String sql = "show partitions from " + table;
+        return showPartitions(ctx, sql);
+    }
+
+    private static void updateReplicaPathHash() {
+        com.google.common.collect.Table<Long, Long, Replica> replicaMetaTable = Env.getCurrentInvertedIndex()
+                .getReplicaMetaTable();
+        for (com.google.common.collect.Table.Cell<Long, Long, Replica> cell : replicaMetaTable.cellSet()) {
+            long beId = cell.getColumnKey();
+            Backend be = Env.getCurrentSystemInfo().getBackend(beId);
+            if (be == null) {
+                continue;
+            }
+            Replica replica = cell.getValue();
+            TabletMeta tabletMeta = Env.getCurrentInvertedIndex().getTabletMeta(cell.getRowKey());
+            ImmutableMap<String, DiskInfo> diskMap = be.getDisks();
+            for (DiskInfo diskInfo : diskMap.values()) {
+                if (diskInfo.getStorageMedium() == tabletMeta.getStorageMedium()) {
+                    replica.setPathHash(diskInfo.getPathHash());
+                    break;
+                }
+            }
+        }
     }
 }

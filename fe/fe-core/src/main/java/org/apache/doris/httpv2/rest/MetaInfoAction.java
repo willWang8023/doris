@@ -22,6 +22,7 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.cluster.ClusterNamespace;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.MetaNotFoundException;
@@ -74,9 +75,9 @@ public class MetaInfoAction extends RestBaseController {
      *   "msg": "success",
      *   "code": 0,
      *   "data": [
-     *     "default_cluster:db1",
-     *     "default_cluster:doris_audit_db__",
-     *     "default_cluster:information_schema"
+     *     "db1",
+     *     "doris_audit_db__",
+     *     "information_schema"
      *   ],
      *   "count": 0
      * }
@@ -86,7 +87,8 @@ public class MetaInfoAction extends RestBaseController {
     public Object getAllDatabases(
             @PathVariable(value = NS_KEY) String ns,
             HttpServletRequest request, HttpServletResponse response) {
-        checkWithCookie(request, response, false);
+        boolean checkAuth = Config.enable_all_http_auth ? true : false;
+        checkWithCookie(request, response, checkAuth);
 
         // use NS_KEY as catalog, but NS_KEY's default value is 'default_cluster'.
         if (ns.equalsIgnoreCase(SystemInfoService.DEFAULT_CLUSTER)) {
@@ -102,7 +104,8 @@ public class MetaInfoAction extends RestBaseController {
         List<String> dbNameSet = Lists.newArrayList();
         for (String fullName : dbNames) {
             final String db = ClusterNamespace.getNameFromFullName(fullName);
-            if (!Env.getCurrentEnv().getAuth().checkDbPriv(ConnectContext.get(), fullName, PrivPredicate.SHOW)) {
+            if (!Env.getCurrentEnv().getAccessManager()
+                    .checkDbPriv(ConnectContext.get(), fullName, PrivPredicate.SHOW)) {
                 continue;
             }
             dbNameSet.add(db);
@@ -132,12 +135,12 @@ public class MetaInfoAction extends RestBaseController {
     public Object getTables(
             @PathVariable(value = NS_KEY) String ns, @PathVariable(value = DB_KEY) String dbName,
             HttpServletRequest request, HttpServletResponse response) {
-        checkWithCookie(request, response, false);
+        boolean checkAuth = Config.enable_all_http_auth ? true : false;
+        checkWithCookie(request, response, checkAuth);
 
         if (!ns.equalsIgnoreCase(SystemInfoService.DEFAULT_CLUSTER)) {
             return ResponseEntityBuilder.badRequest("Only support 'default_cluster' now");
         }
-
 
         String fullDbName = getFullDbName(dbName);
         Database db;
@@ -149,7 +152,7 @@ public class MetaInfoAction extends RestBaseController {
 
         List<String> tblNames = Lists.newArrayList();
         for (Table tbl : db.getTables()) {
-            if (!Env.getCurrentEnv().getAuth().checkTblPriv(ConnectContext.get(), fullDbName, tbl.getName(),
+            if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(ConnectContext.get(), fullDbName, tbl.getName(),
                     PrivPredicate.SHOW)) {
                 continue;
             }
@@ -208,7 +211,8 @@ public class MetaInfoAction extends RestBaseController {
             @PathVariable(value = NS_KEY) String ns, @PathVariable(value = DB_KEY) String dbName,
             @PathVariable(value = TABLE_KEY) String tblName,
             HttpServletRequest request, HttpServletResponse response) throws UserException {
-        checkWithCookie(request, response, false);
+        boolean checkAuth = Config.enable_all_http_auth ? true : false;
+        checkWithCookie(request, response, checkAuth);
 
         if (!ns.equalsIgnoreCase(SystemInfoService.DEFAULT_CLUSTER)) {
             return ResponseEntityBuilder.badRequest("Only support 'default_cluster' now");

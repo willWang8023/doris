@@ -20,18 +20,18 @@ package org.apache.doris.nereids.util;
 import org.apache.doris.analysis.UserIdentity;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.nereids.CascadesContext;
+import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.StatementContext;
 import org.apache.doris.nereids.parser.NereidsParser;
+import org.apache.doris.nereids.properties.PhysicalProperties;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.OriginStatement;
-import org.apache.doris.system.SystemInfoService;
 
 import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
-import java.nio.channels.SocketChannel;
 
 /**
  * MemoUtils.
@@ -50,7 +50,9 @@ public class MemoTestUtils {
     }
 
     public static StatementContext createStatementContext(ConnectContext connectContext, String sql) {
-        return new StatementContext(connectContext, new OriginStatement(sql, 0));
+        StatementContext statementContext = new StatementContext(connectContext, new OriginStatement(sql, 0));
+        connectContext.setStatementContext(statementContext);
+        return statementContext;
     }
 
     public static CascadesContext createCascadesContext(String sql) {
@@ -77,7 +79,10 @@ public class MemoTestUtils {
     }
 
     public static CascadesContext createCascadesContext(StatementContext statementContext, Plan initPlan) {
-        CascadesContext cascadesContext = CascadesContext.newContext(statementContext, initPlan);
+        PhysicalProperties requestProperties = NereidsPlanner.buildInitRequireProperties();
+        CascadesContext cascadesContext = CascadesContext.initContext(
+                statementContext, initPlan, requestProperties);
+        cascadesContext.toMemo();
         MemoValidator.validateInitState(cascadesContext.getMemo(), initPlan);
         return cascadesContext;
     }
@@ -85,7 +90,7 @@ public class MemoTestUtils {
     public static LogicalPlan analyze(String sql) {
         CascadesContext cascadesContext = createCascadesContext(sql);
         cascadesContext.newAnalyzer().analyze();
-        return (LogicalPlan) cascadesContext.getMemo().copyOut();
+        return (LogicalPlan) cascadesContext.getRewritePlan();
     }
 
     /**
@@ -97,9 +102,7 @@ public class MemoTestUtils {
      */
     public static ConnectContext createCtx(UserIdentity user, String host) {
         try {
-            SocketChannel channel = SocketChannel.open();
-            ConnectContext ctx = new ConnectContext(channel);
-            ctx.setCluster(SystemInfoService.DEFAULT_CLUSTER);
+            ConnectContext ctx = new ConnectContext();
             ctx.setCurrentUserIdentity(user);
             ctx.setQualifiedUser(user.getQualifiedUser());
             ctx.setRemoteIP(host);

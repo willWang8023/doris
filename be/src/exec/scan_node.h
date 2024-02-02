@@ -20,15 +20,21 @@
 
 #pragma once
 
+#include <functional>
 #include <string>
+#include <vector>
 
+#include "common/status.h"
 #include "exec/exec_node.h"
-#include "gen_cpp/PaloInternalService_types.h"
 #include "util/runtime_profile.h"
 
 namespace doris {
 
-class TScanRange;
+class DescriptorTbl;
+class ObjectPool;
+class RuntimeState;
+class TPlanNode;
+class TScanRangeParams;
 
 // Abstract base class of all scan nodes; introduces set_scan_range().
 //
@@ -77,11 +83,10 @@ public:
 
     // Convert scan_ranges into node-specific scan restrictions.  This should be
     // called after prepare()
-    virtual Status set_scan_ranges(const std::vector<TScanRangeParams>& scan_ranges) = 0;
+    virtual Status set_scan_ranges(RuntimeState* state,
+                                   const std::vector<TScanRangeParams>& scan_ranges) = 0;
 
     bool is_scan_node() const override { return true; }
-
-    void set_no_agg_finalize() { _need_agg_finalize = false; }
 
     RuntimeProfile::Counter* bytes_read_counter() const { return _bytes_read_counter; }
     RuntimeProfile::Counter* rows_read_counter() const { return _rows_read_counter; }
@@ -94,19 +99,11 @@ public:
     static const std::string _s_num_disks_accessed_counter;
 
 protected:
-    void _peel_pushed_vconjunct(
-            RuntimeState* state,
-            const std::function<bool(int)>& checker); // remove pushed expr from conjunct tree
-
-    RuntimeProfile::Counter* _bytes_read_counter; // # bytes read from the scanner
-    // # rows/tuples read from the scanner (including those discarded by eval_conjuncts())
-    RuntimeProfile::Counter* _rows_read_counter;
+    RuntimeProfile::Counter* _bytes_read_counter = nullptr; // # bytes read from the scanner
+    RuntimeProfile::Counter* _rows_read_counter = nullptr;
     // Wall based aggregate read throughput [bytes/sec]
-    RuntimeProfile::Counter* _total_throughput_counter;
-    RuntimeProfile::Counter* _num_disks_accessed_counter;
-
-protected:
-    bool _need_agg_finalize = true;
+    RuntimeProfile::Counter* _total_throughput_counter = nullptr;
+    RuntimeProfile::Counter* _num_disks_accessed_counter = nullptr;
 };
 
 } // namespace doris

@@ -45,7 +45,6 @@ public final class ProcService {
         root.register("frontends", new FrontendsProcNode(Env.getCurrentEnv()));
         root.register("brokers", Env.getCurrentEnv().getBrokerMgr().getProcNode());
         root.register("resources", Env.getCurrentEnv().getResourceMgr().getProcNode());
-        root.register("load_error_hub", new LoadErrorHubProcNode(Env.getCurrentEnv()));
         root.register("transactions", new TransDbProcDir());
         root.register("trash", new TrashProcDir());
         root.register("monitor", new MonitorProcDir());
@@ -58,6 +57,8 @@ public final class ProcService {
         root.register("stream_loads", new StreamLoadProcNode());
         root.register("colocation_group", new ColocationGroupProcDir());
         root.register("bdbje", new BDBJEProcDir());
+        root.register("diagnose", new DiagnoseProcDir());
+        root.register("binlog", new BinlogProcDir());
     }
 
     // 通过指定的路径获得对应的PROC Node

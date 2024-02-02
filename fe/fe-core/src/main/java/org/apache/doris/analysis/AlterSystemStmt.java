@@ -25,23 +25,21 @@ import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 
 import com.google.common.base.Preconditions;
+import lombok.Getter;
 
+@Getter
 public class AlterSystemStmt extends DdlStmt {
 
-    private AlterClause alterClause;
+    private final AlterClause alterClause;
 
     public AlterSystemStmt(AlterClause alterClause) {
         this.alterClause = alterClause;
     }
 
-    public AlterClause getAlterClause() {
-        return alterClause;
-    }
-
     @Override
     public void analyze(Analyzer analyzer) throws UserException {
 
-        if (!Env.getCurrentEnv().getAuth().checkGlobalPriv(ConnectContext.get(), PrivPredicate.OPERATOR)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkGlobalPriv(ConnectContext.get(), PrivPredicate.OPERATOR)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR,
                                                 "NODE");
         }
@@ -55,16 +53,17 @@ public class AlterSystemStmt extends DdlStmt {
                 || (alterClause instanceof DropFollowerClause)
                 || (alterClause instanceof ModifyBrokerClause)
                 || (alterClause instanceof AlterLoadErrorUrlClause)
-                || (alterClause instanceof ModifyBackendClause));
+                || (alterClause instanceof ModifyBackendClause)
+                || (alterClause instanceof ModifyBackendHostNameClause)
+                || (alterClause instanceof ModifyFrontendHostNameClause)
+        );
 
         alterClause.analyze(analyzer);
     }
 
     @Override
     public String toSql() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("ALTER SYSTEM ").append(alterClause.toSql());
-        return sb.toString();
+        return "ALTER SYSTEM " + alterClause.toSql();
     }
 
     @Override

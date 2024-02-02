@@ -15,14 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
-#include <time.h>
+#include <stdint.h>
 
+#include <cstring>
+#include <memory>
 #include <string>
+#include <vector>
 
+#include "common/status.h"
 #include "function_test_util.h"
+#include "gtest/gtest_pred_impl.h"
+#include "gutil/integral_types.h"
+#include "testutil/any_type.h"
 #include "util/encryption_util.h"
+#include "vec/core/field.h"
 #include "vec/core/types.h"
+#include "vec/data_types/data_type_date_time.h"
+#include "vec/data_types/data_type_nullable.h"
+#include "vec/data_types/data_type_number.h"
 #include "vec/data_types/data_type_string.h"
 
 namespace doris::vectorized {
@@ -47,7 +57,7 @@ TEST(function_string_test, function_string_substr_test) {
                 {{std::string("123"), 1, 0}, std::string("")},
                 {{Null(), 5, 4}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -65,7 +75,7 @@ TEST(function_string_test, function_string_substr_test) {
                 {{std::string("123"), 0}, std::string("")},
                 {{Null(), 5, 4}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 }
 
@@ -80,7 +90,7 @@ TEST(function_string_test, function_string_strright_test) {
                         {{std::string(""), 3}, std::string("")},
                         {{Null(), 3}, Null()}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_strleft_test) {
@@ -97,7 +107,7 @@ TEST(function_string_test, function_string_strleft_test) {
                         {{std::string("123"), 0}, std::string("")},
                         {{Null(), 3}, Null()}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_lower_test) {
@@ -109,7 +119,7 @@ TEST(function_string_test, function_string_lower_test) {
                         {{std::string("HELLO,!^%")}, std::string("hello,!^%")},
                         {{std::string("")}, std::string("")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_upper_test) {
@@ -121,7 +131,7 @@ TEST(function_string_test, function_string_upper_test) {
                         {{std::string("MYtestStr")}, std::string("MYTESTSTR")},
                         {{std::string("")}, std::string("")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_trim_test) {
@@ -134,7 +144,7 @@ TEST(function_string_test, function_string_trim_test) {
                         {{Null()}, Null()},
                         {{std::string("")}, std::string("")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_ltrim_test) {
@@ -146,7 +156,7 @@ TEST(function_string_test, function_string_ltrim_test) {
             {{std::string("  HELLO,!^%")}, std::string("HELLO,!^%")},
             {{std::string("  你好MY test Str你好  ")}, std::string("你好MY test Str你好  ")},
             {{std::string("")}, std::string("")}};
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_rtrim_test) {
@@ -158,19 +168,21 @@ TEST(function_string_test, function_string_rtrim_test) {
                         {{std::string("  MY test Str你好  ")}, std::string("  MY test Str你好")},
                         {{std::string("")}, std::string("")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 TEST(function_string_test, function_string_repeat_test) {
     std::string func_name = "repeat";
     InputTypeSet input_types = {TypeIndex::String, TypeIndex::Int32};
 
-    DataSet data_set = {{{std::string("a"), 3}, std::string("aaa")},
-                        {{std::string("hel lo"), 2}, std::string("hel lohel lo")},
-                        {{std::string("hello word"), -1}, std::string("")},
-                        {{std::string(""), 1}, std::string("")},
-                        {{std::string("HELLO,!^%"), 2}, std::string("HELLO,!^%HELLO,!^%")},
-                        {{std::string("你"), 2}, std::string("你你")}};
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    DataSet data_set = {
+            {{std::string("a"), 3}, std::string("aaa")},
+            {{std::string("hel lo"), 2}, std::string("hel lohel lo")},
+            {{std::string("hello word"), -1}, std::string("")},
+            {{std::string(""), 1}, std::string("")},
+            {{std::string("a"), 1073741825}, std::string("aaaaaaaaaa")}, // ut repeat max num 10
+            {{std::string("HELLO,!^%"), 2}, std::string("HELLO,!^%HELLO,!^%")},
+            {{std::string("你"), 2}, std::string("你你")}};
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_reverse_test) {
@@ -182,7 +194,7 @@ TEST(function_string_test, function_string_reverse_test) {
                         {{std::string("你好啊")}, std::string("啊好你")},
                         {{std::string("")}, std::string("")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_string_length_test) {
@@ -194,7 +206,7 @@ TEST(function_string_test, function_string_length_test) {
                         {{std::string("你好啊")}, int32_t(9)},
                         {{std::string("")}, int32_t(0)}};
 
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_append_trailing_char_if_absent_test) {
@@ -207,7 +219,7 @@ TEST(function_string_test, function_append_trailing_char_if_absent_test) {
                         {{std::string(""), std::string("")}, Null()},
                         {{std::string(""), std::string("A")}, std::string("A")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_starts_with_test) {
@@ -222,7 +234,7 @@ TEST(function_string_test, function_starts_with_test) {
                         {{std::string("你好"), Null()}, Null()},
                         {{Null(), std::string("")}, Null()}};
 
-    check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_ends_with_test) {
@@ -237,7 +249,7 @@ TEST(function_string_test, function_ends_with_test) {
                         {{std::string("你好"), Null()}, Null()},
                         {{Null(), std::string("")}, Null()}};
 
-    check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_lpad_test) {
@@ -258,7 +270,7 @@ TEST(function_string_test, function_lpad_test) {
                         {{std::string("hi"), 5, std::string("呵呵")}, std::string("呵呵呵hi")},
                         {{std::string("呵呵"), 5, std::string("hi")}, std::string("hih呵呵")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_rpad_test) {
@@ -279,7 +291,7 @@ TEST(function_string_test, function_rpad_test) {
                         {{std::string("hi"), 5, std::string("呵呵")}, std::string("hi呵呵呵")},
                         {{std::string("呵呵"), 5, std::string("hi")}, std::string("呵呵hih")}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_ascii_test) {
@@ -292,7 +304,7 @@ TEST(function_string_test, function_ascii_test) {
                         {{std::string("我")}, 230},
                         {{Null()}, Null()}};
 
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_char_length_test) {
@@ -305,7 +317,7 @@ TEST(function_string_test, function_char_length_test) {
                         {{std::string("a我")}, 2}, {{std::string("123")}, 3},
                         {{Null()}, Null()}};
 
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_concat_test) {
@@ -317,7 +329,7 @@ TEST(function_string_test, function_concat_test) {
                             {{std::string("123")}, std::string("123")},
                             {{Null()}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -327,7 +339,7 @@ TEST(function_string_test, function_concat_test) {
                             {{std::string("123"), std::string("45")}, std::string("12345")},
                             {{std::string("123"), Null()}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -339,7 +351,7 @@ TEST(function_string_test, function_concat_test) {
                  std::string("123456789")},
                 {{std::string("123"), Null(), std::string("789")}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 }
 
@@ -353,7 +365,7 @@ TEST(function_string_test, function_elt_test) {
                             {{1, std::string("你好"), std::string("百度")}, std::string("你好")},
                             {{1, std::string("hello"), std::string("")}, std::string("hello")}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -363,7 +375,7 @@ TEST(function_string_test, function_elt_test) {
                             {{2, std::string("你好"), std::string("百度")}, std::string("百度")},
                             {{2, std::string("hello"), std::string("")}, std::string("")}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -373,7 +385,7 @@ TEST(function_string_test, function_elt_test) {
                             {{0, std::string("你好"), std::string("百度")}, Null()},
                             {{0, std::string("hello"), std::string("")}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -383,7 +395,7 @@ TEST(function_string_test, function_elt_test) {
                             {{3, std::string("你好"), std::string("百度")}, Null()},
                             {{3, std::string("hello"), std::string("")}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 }
 
@@ -398,7 +410,7 @@ TEST(function_string_test, function_concat_ws_test) {
                             {{Null(), std::string("")}, Null()},
                             {{Null(), Null()}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -411,7 +423,7 @@ TEST(function_string_test, function_concat_ws_test) {
                 {{Null(), std::string(""), std::string("")}, Null()},
                 {{Null(), std::string(""), Null()}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -429,7 +441,7 @@ TEST(function_string_test, function_concat_ws_test) {
                 {{std::string("-"), std::string("123"), Null(), std::string("456")},
                  std::string("123-456")}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 
     {
@@ -446,7 +458,7 @@ TEST(function_string_test, function_concat_ws_test) {
                             {{Null(), vec4}, Null()},
                             {{std::string("-"), vec5}, std::string("abc-def-ghi")}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     };
 }
 
@@ -460,7 +472,7 @@ TEST(function_string_test, function_null_or_empty_test) {
                         {{std::string("我")}, uint8(false)},
                         {{Null()}, uint8(true)}};
 
-    check_function<DataTypeUInt8, false>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeUInt8, false>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_to_base64_test) {
@@ -474,7 +486,7 @@ TEST(function_string_test, function_to_base64_test) {
                         {{std::string("MYtestSTR")}, {std::string("TVl0ZXN0U1RS")}},
                         {{std::string("ò&ø")}, {std::string("w7Imw7g=")}}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_from_base64_test) {
@@ -490,7 +502,7 @@ TEST(function_string_test, function_from_base64_test) {
                         {{std::string("ò&ø")}, {Null()}},
                         {{std::string("你好哈喽")}, {Null()}}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_reverse_test) {
@@ -505,7 +517,7 @@ TEST(function_string_test, function_reverse_test) {
             {{std::string("A攀c")}, {std::string("c攀A")}},
             {{std::string("NULL")}, {std::string("LLUN")}}};
 
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_instr_test) {
@@ -519,7 +531,7 @@ TEST(function_string_test, function_instr_test) {
             {{STRING("abcdef"), STRING("")}, INT(1)},     {{STRING(""), STRING("")}, INT(1)},
             {{STRING("aaaab"), STRING("bb")}, INT(0)}};
 
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_locate_test) {
@@ -536,7 +548,7 @@ TEST(function_string_test, function_locate_test) {
                             {{STRING(""), STRING("")}, INT(1)},
                             {{STRING("bb"), STRING("aaaab")}, INT(0)}};
 
-        check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
     }
 
     {
@@ -550,7 +562,7 @@ TEST(function_string_test, function_locate_test) {
                             {{STRING("A"), STRING("大A写的A"), INT(2)}, INT(2)},
                             {{STRING("A"), STRING("大A写的A"), INT(3)}, INT(5)}};
 
-        check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
     }
 }
 
@@ -567,24 +579,7 @@ TEST(function_string_test, function_find_in_set_test) {
                         {{std::string("a"), std::string("")}, 0},
                         {{std::string(""), std::string(",,")}, 1}};
 
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
-}
-
-TEST(function_string_test, function_string_splitpart_test) {
-    std::string func_name = "split_part";
-    InputTypeSet input_types = {TypeIndex::String, TypeIndex::String, TypeIndex::Int32};
-
-    DataSet data_set = {
-            {{std::string("prefix_string1"), std::string("_"), 2}, std::string("string1")},
-            {{std::string("prefix__string2"), std::string("__"), 2}, std::string("string2")},
-            {{std::string("prefix__string2"), std::string("_"), 2}, std::string("")},
-            {{std::string("prefix_string2"), std::string("__"), 1}, Null()},
-            {{Null(), std::string("__"), 1}, Null()},
-            {{std::string("prefix_string"), Null(), 1}, Null()},
-            {{std::string("prefix_string"), std::string("__"), Null()}, Null()},
-            {{std::string("prefix_string"), std::string("__"), -1}, Null()}};
-
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_md5sum_test) {
@@ -602,7 +597,7 @@ TEST(function_string_test, function_md5sum_test) {
                 {{std::string("MYtestSTR")}, {std::string("cd24c90b3fc1192eb1879093029e87d4")}},
                 {{std::string("ò&ø")}, {std::string("fd157b4cb921fa91acc667380184d59c")}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -615,7 +610,7 @@ TEST(function_string_test, function_md5sum_test) {
                              {std::string("b8e6e34d1cc3dc76b784ddfdfb7df800")}},
                             {{Null(), std::string("HELLO")}, {Null()}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -628,7 +623,7 @@ TEST(function_string_test, function_md5sum_test) {
                              {std::string("b8e6e34d1cc3dc76b784ddfdfb7df800")}},
                             {{Null(), std::string("HELLO"), Null()}, {Null()}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 }
 
@@ -655,7 +650,7 @@ TEST(function_string_test, function_sm3sum_test) {
                  {std::string(
                          "aa47ac31c85aa819d4cc80c932e7900fa26a3073a67aa7eb011bc2ba4924a066")}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -669,7 +664,7 @@ TEST(function_string_test, function_sm3sum_test) {
                  {std::string("1f5866e786ebac9ffed0dbd8f2586e3e99d1d05f7efe7c5915478b57b7423570")}},
                 {{Null(), std::string("HELLO")}, {Null()}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -683,15 +678,16 @@ TEST(function_string_test, function_sm3sum_test) {
                  {std::string("5fc6e38f40b31a659a59e1daba9b68263615f20c02037b419d9deb3509e6b5c6")}},
                 {{Null(), std::string("HELLO"), Null()}, {Null()}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 }
 
 TEST(function_string_test, function_aes_encrypt_test) {
     std::string func_name = "aes_encrypt";
     {
-        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String};
+        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String, TypeIndex::String};
 
+        const char* mode = "AES_128_ECB";
         const char* key = "doris";
         const char* src[6] = {"aaaaaa", "bbbbbb", "cccccc", "dddddd", "eeeeee", ""};
         std::string r[5];
@@ -706,15 +702,15 @@ TEST(function_string_test, function_aes_encrypt_test) {
             r[i] = std::string(p, outlen);
         }
 
-        DataSet data_set = {{{std::string(src[0]), std::string(key)}, r[0]},
-                            {{std::string(src[1]), std::string(key)}, r[1]},
-                            {{std::string(src[2]), std::string(key)}, r[2]},
-                            {{std::string(src[3]), std::string(key)}, r[3]},
-                            {{std::string(src[4]), std::string(key)}, r[4]},
-                            {{std::string(src[5]), std::string(key)}, Null()},
-                            {{Null(), std::string(key)}, Null()}};
+        DataSet data_set = {{{std::string(src[0]), std::string(key), std::string(mode)}, r[0]},
+                            {{std::string(src[1]), std::string(key), std::string(mode)}, r[1]},
+                            {{std::string(src[2]), std::string(key), std::string(mode)}, r[2]},
+                            {{std::string(src[3]), std::string(key), std::string(mode)}, r[3]},
+                            {{std::string(src[4]), std::string(key), std::string(mode)}, r[4]},
+                            {{std::string(src[5]), std::string(key), std::string(mode)}, Null()},
+                            {{Null(), std::string(key), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
     {
         InputTypeSet input_types = {TypeIndex::String, TypeIndex::String, TypeIndex::String,
@@ -750,15 +746,16 @@ TEST(function_string_test, function_aes_encrypt_test) {
                  Null()},
                 {{Null(), std::string(key), std::string(iv), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 }
 
 TEST(function_string_test, function_aes_decrypt_test) {
     std::string func_name = "aes_decrypt";
     {
-        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String};
+        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String, TypeIndex::String};
 
+        const char* mode = "AES_128_ECB";
         const char* key = "doris";
         const char* src[5] = {"aaaaaa", "bbbbbb", "cccccc", "dddddd", "eeeeee"};
         std::string r[5];
@@ -773,14 +770,14 @@ TEST(function_string_test, function_aes_decrypt_test) {
             r[i] = std::string(p, outlen);
         }
 
-        DataSet data_set = {{{r[0], std::string(key)}, std::string(src[0])},
-                            {{r[1], std::string(key)}, std::string(src[1])},
-                            {{r[2], std::string(key)}, std::string(src[2])},
-                            {{r[3], std::string(key)}, std::string(src[3])},
-                            {{r[4], std::string(key)}, std::string(src[4])},
-                            {{Null(), std::string(key)}, Null()}};
+        DataSet data_set = {{{r[0], std::string(key), std::string(mode)}, std::string(src[0])},
+                            {{r[1], std::string(key), std::string(mode)}, std::string(src[1])},
+                            {{r[2], std::string(key), std::string(mode)}, std::string(src[2])},
+                            {{r[3], std::string(key), std::string(mode)}, std::string(src[3])},
+                            {{r[4], std::string(key), std::string(mode)}, std::string(src[4])},
+                            {{Null(), std::string(key), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
     {
         InputTypeSet input_types = {TypeIndex::String, TypeIndex::String, TypeIndex::String,
@@ -813,38 +810,48 @@ TEST(function_string_test, function_aes_decrypt_test) {
                 {{r[4], std::string(key), std::string(iv), std::string(mode)}, std::string(src[4])},
                 {{Null(), std::string(key), std::string(iv), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 }
 
 TEST(function_string_test, function_sm4_encrypt_test) {
     std::string func_name = "sm4_encrypt";
     {
-        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String};
+        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String, TypeIndex::String,
+                                    TypeIndex::String};
 
         const char* key = "doris";
+        const char* iv = "0123456789abcdef";
+        const char* mode = "SM4_128_ECB";
         const char* src[6] = {"aaaaaa", "bbbbbb", "cccccc", "dddddd", "eeeeee", ""};
         std::string r[5];
 
         for (int i = 0; i < 5; i++) {
             int cipher_len = strlen(src[i]) + 16;
             char p[cipher_len];
-
-            int outlen = EncryptionUtil::encrypt(
-                    EncryptionMode::SM4_128_ECB, (unsigned char*)src[i], strlen(src[i]),
-                    (unsigned char*)key, strlen(key), nullptr, 0, true, (unsigned char*)p);
+            int iv_len = 32;
+            std::unique_ptr<char[]> init_vec;
+            init_vec.reset(new char[iv_len]);
+            std::memset(init_vec.get(), 0, strlen(iv) + 1);
+            memcpy(init_vec.get(), iv, strlen(iv));
+            int outlen =
+                    EncryptionUtil::encrypt(EncryptionMode::SM4_128_ECB, (unsigned char*)src[i],
+                                            strlen(src[i]), (unsigned char*)key, strlen(key),
+                                            init_vec.get(), strlen(iv), true, (unsigned char*)p);
             r[i] = std::string(p, outlen);
         }
 
-        DataSet data_set = {{{std::string(src[0]), std::string(key)}, r[0]},
-                            {{std::string(src[1]), std::string(key)}, r[1]},
-                            {{std::string(src[2]), std::string(key)}, r[2]},
-                            {{std::string(src[3]), std::string(key)}, r[3]},
-                            {{std::string(src[4]), std::string(key)}, r[4]},
-                            {{std::string(src[5]), std::string(key)}, Null()},
-                            {{Null(), std::string(key)}, Null()}};
+        DataSet data_set = {
+                {{std::string(src[0]), std::string(key), std::string(iv), std::string(mode)}, r[0]},
+                {{std::string(src[1]), std::string(key), std::string(iv), std::string(mode)}, r[1]},
+                {{std::string(src[2]), std::string(key), std::string(iv), std::string(mode)}, r[2]},
+                {{std::string(src[3]), std::string(key), std::string(iv), std::string(mode)}, r[3]},
+                {{std::string(src[4]), std::string(key), std::string(iv), std::string(mode)}, r[4]},
+                {{std::string(src[5]), std::string(key), std::string(iv), std::string(mode)},
+                 Null()},
+                {{Null(), std::string(key), std::string(iv), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -882,37 +889,46 @@ TEST(function_string_test, function_sm4_encrypt_test) {
                  Null()},
                 {{Null(), std::string(key), std::string(iv), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 }
 
 TEST(function_string_test, function_sm4_decrypt_test) {
     std::string func_name = "sm4_decrypt";
     {
-        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String};
+        InputTypeSet input_types = {TypeIndex::String, TypeIndex::String, TypeIndex::String,
+                                    TypeIndex::String};
 
         const char* key = "doris";
+        const char* iv = "0123456789abcdef";
+        const char* mode = "SM4_128_ECB";
         const char* src[5] = {"aaaaaa", "bbbbbb", "cccccc", "dddddd", "eeeeee"};
         std::string r[5];
 
         for (int i = 0; i < 5; i++) {
             int cipher_len = strlen(src[i]) + 16;
             char p[cipher_len];
-
-            int outlen = EncryptionUtil::encrypt(
-                    EncryptionMode::SM4_128_ECB, (unsigned char*)src[i], strlen(src[i]),
-                    (unsigned char*)key, strlen(key), nullptr, 0, true, (unsigned char*)p);
+            int iv_len = 32;
+            std::unique_ptr<char[]> init_vec;
+            init_vec.reset(new char[iv_len]);
+            std::memset(init_vec.get(), 0, strlen(iv) + 1);
+            memcpy(init_vec.get(), iv, strlen(iv));
+            int outlen =
+                    EncryptionUtil::encrypt(EncryptionMode::SM4_128_ECB, (unsigned char*)src[i],
+                                            strlen(src[i]), (unsigned char*)key, strlen(key),
+                                            init_vec.get(), strlen(iv), true, (unsigned char*)p);
             r[i] = std::string(p, outlen);
         }
 
-        DataSet data_set = {{{r[0], std::string(key)}, std::string(src[0])},
-                            {{r[1], std::string(key)}, std::string(src[1])},
-                            {{r[2], std::string(key)}, std::string(src[2])},
-                            {{r[3], std::string(key)}, std::string(src[3])},
-                            {{r[4], std::string(key)}, std::string(src[4])},
-                            {{Null(), std::string(key)}, Null()}};
+        DataSet data_set = {
+                {{r[0], std::string(key), std::string(iv), std::string(mode)}, std::string(src[0])},
+                {{r[1], std::string(key), std::string(iv), std::string(mode)}, std::string(src[1])},
+                {{r[2], std::string(key), std::string(iv), std::string(mode)}, std::string(src[2])},
+                {{r[3], std::string(key), std::string(iv), std::string(mode)}, std::string(src[3])},
+                {{r[4], std::string(key), std::string(iv), std::string(mode)}, std::string(src[4])},
+                {{Null(), std::string(key), std::string(iv), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -948,8 +964,33 @@ TEST(function_string_test, function_sm4_decrypt_test) {
                 {{r[4], std::string(key), std::string(iv), std::string(mode)}, std::string(src[4])},
                 {{Null(), Null(), std::string(iv), std::string(mode)}, Null()}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
+}
+
+TEST(function_string_test, function_extract_url_parameter_test) {
+    std::string func_name = "extract_url_parameter";
+    InputTypeSet input_types = {TypeIndex::String, TypeIndex::String};
+    DataSet data_set = {
+            {{VARCHAR(""), VARCHAR("k1")}, {VARCHAR("")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa"), VARCHAR("")}, {VARCHAR("")}},
+            {{VARCHAR("https://doris.apache.org/"), VARCHAR("k1")}, {VARCHAR("")}},
+            {{VARCHAR("http://doris.apache.org?"), VARCHAR("k1")}, {VARCHAR("")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa"), VARCHAR("k1")}, {VARCHAR("aa")}},
+            {{VARCHAR("http://doris.apache.org:8080?k1&k2=bb#99"), VARCHAR("k1")}, {VARCHAR("")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa#999"), VARCHAR("k1")}, {VARCHAR("aa")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa&k2=bb&test=dd#999/"), VARCHAR("k1")},
+             {VARCHAR("aa")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa&k2=bb&test=dd#999/"), VARCHAR("k2")},
+             {VARCHAR("bb")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa&k2=bb&test=dd#999/"), VARCHAR("999")},
+             {VARCHAR("")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa&k2=bb&test=dd#999/"), VARCHAR("k3")},
+             {VARCHAR("")}},
+            {{VARCHAR("http://doris.apache.org?k1=aa&k2=bb&test=dd#999/"), VARCHAR("test")},
+             {VARCHAR("dd")}}};
+
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_parse_url_test) {
@@ -962,6 +1003,10 @@ TEST(function_string_test, function_parse_url_test) {
                 {{std::string("facebook.com/path/p1"), std::string("HOST")}, {Null()}},
                 {{std::string("http://fb.com/path/p1.p?q=1#f"), std::string("HOST")},
                  {std::string("fb.com")}},
+                {{std::string("https://www.facebook.com/aa/bb?returnpage=https://www.facebook.com/"
+                              "aa/bb/cc"),
+                  std::string("HOST")},
+                 {std::string("www.facebook.com")}},
                 {{std::string("http://facebook.com/path/p1.php?query=1"), std::string("AUTHORITY")},
                  {std::string("facebook.com")}},
                 {{std::string("http://facebook.com/path/p1.php?query=1"), std::string("authority")},
@@ -990,7 +1035,7 @@ TEST(function_string_test, function_parse_url_test) {
                 {{std::string("http://fb.com/path/p1.p?q=1#f"), std::string("QUERY")},
                  {std::string("q=1")}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -1008,7 +1053,7 @@ TEST(function_string_test, function_parse_url_test) {
                   std::string("q")},
                  {Null()}}};
 
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 }
 
@@ -1025,7 +1070,7 @@ TEST(function_string_test, function_hex_test) {
                         {{std::string("我")}, std::string("E68891")},
                         {{std::string("?")}, std::string("3F")},
                         {{std::string("？")}, std::string("EFBC9F")}};
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_unhex_test) {
@@ -1040,7 +1085,7 @@ TEST(function_string_test, function_unhex_test) {
                         {{std::string("41")}, std::string("A")},
                         {{std::string("313233")}, std::string("123")},
                         {{std::string("EFBC9F")}, std::string("？")}};
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_coalesce_test) {
@@ -1051,7 +1096,7 @@ TEST(function_string_test, function_coalesce_test) {
                             {{Null(), Null(), (int32_t)2}, {(int32_t)2}},
                             {{Null(), Null(), (int32_t)3}, {(int32_t)3}},
                             {{Null(), Null(), (int32_t)4}, {(int32_t)4}}};
-        check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
     }
 
     {
@@ -1062,7 +1107,7 @@ TEST(function_string_test, function_coalesce_test) {
                 {{std::string("zxcv"), Null(), (int32_t)3}, {std::string("zxcv")}},
                 {{std::string("vbnm"), Null(), (int32_t)4}, {std::string("vbnm")}},
         };
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
 
     {
@@ -1072,27 +1117,8 @@ TEST(function_string_test, function_coalesce_test) {
                 {{Null(), std::string("def"), std::string("klm")}, {std::string("def")}},
                 {{Null(), std::string(""), std::string("xyz")}, {std::string("")}},
                 {{Null(), Null(), std::string("uvw")}, {std::string("uvw")}}};
-        check_function<DataTypeString, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
     }
-}
-
-TEST(function_string_test, function_str_to_date_test) {
-    std::string func_name = "str_to_date";
-    InputTypeSet input_types = {
-            TypeIndex::String,
-            TypeIndex::String,
-    };
-    DataSet data_set = {
-            {{Null(), std::string("%Y-%m-%d %H:%i:%s")}, {Null()}},
-            {{std::string("2014-12-21 12:34:56"), std::string("%Y-%m-%d %H:%i:%s")},
-             str_to_date_time("2014-12-21 12:34:56", false)},
-            {{std::string("2014-12-21 12:34%3A56"), std::string("%Y-%m-%d %H:%i%%3A%s")},
-             str_to_date_time("2014-12-21 12:34:56", false)},
-            {{std::string("11/09/2011"), std::string("%m/%d/%Y")},
-             str_to_date_time("2011-11-09", false)},
-            {{std::string("2020-09-01"), std::string("%Y-%m-%d %H:%i:%s")},
-             str_to_date_time("2020-09-01 00:00:00", false)}};
-    check_function<DataTypeDateTime, true>(func_name, input_types, data_set);
 }
 
 TEST(function_string_test, function_replace) {
@@ -1108,7 +1134,7 @@ TEST(function_string_test, function_replace) {
                         {{VARCHAR("aaaaa"), VARCHAR("a"), VARCHAR("")}, {VARCHAR("")}},
                         {{VARCHAR("aaaaa"), VARCHAR("aa"), VARCHAR("")}, {VARCHAR("a")}},
                         {{VARCHAR("aaaaa"), VARCHAR("aa"), VARCHAR("a")}, {VARCHAR("aaa")}}};
-    check_function<DataTypeString, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeString, true>(func_name, input_types, data_set));
 }
 
 TEST(function_string_test, function_bit_length_test) {
@@ -1123,7 +1149,7 @@ TEST(function_string_test, function_bit_length_test) {
                         {{std::string("hello你好")}, 88},
                         {{std::string("313233")}, 48},
                         {{std::string("EFBC9F")}, 48}};
-    check_function<DataTypeInt32, true>(func_name, input_types, data_set);
+    static_cast<void>(check_function<DataTypeInt32, true>(func_name, input_types, data_set));
 }
 
 } // namespace doris::vectorized

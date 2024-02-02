@@ -72,14 +72,14 @@ public class BatchRollupJobTest {
         Env.getCurrentEnv().createTable(createTableStmt);
 
         // batch add 3 rollups
-        String stmtStr = "alter table db1.tbl1 add rollup r1(k1) duplicate key(k1), r2(k1, k2) duplicate key(k1), r3(k2) duplicate key(k2);";
+        String stmtStr = "alter table db1.tbl1 add rollup r1(k3) duplicate key(k3), r2(k2, k1) duplicate key(k2), r3(k2) duplicate key(k2);";
         AlterTableStmt alterTableStmt = (AlterTableStmt) UtFrameUtils.parseAndAnalyzeStmt(stmtStr, ctx);
         Env.getCurrentEnv().getAlterInstance().processAlterTable(alterTableStmt);
 
         Map<Long, AlterJobV2> alterJobs = Env.getCurrentEnv().getMaterializedViewHandler().getAlterJobsV2();
         Assert.assertEquals(3, alterJobs.size());
 
-        Database db = Env.getCurrentInternalCatalog().getDbNullable("default_cluster:db1");
+        Database db = Env.getCurrentInternalCatalog().getDbNullable("db1");
         Assert.assertNotNull(db);
         OlapTable tbl = (OlapTable) db.getTableNullable("tbl1");
         Assert.assertNotNull(tbl);
@@ -92,7 +92,7 @@ public class BatchRollupJobTest {
             while (!alterJobV2.getJobState().isFinalState()) {
                 System.out.println(
                         "rollup job " + alterJobV2.getJobId() + " is running. state: " + alterJobV2.getJobState());
-                Thread.sleep(5000);
+                Thread.sleep(1000);
             }
             System.out.println("rollup job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
             Assert.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
@@ -122,7 +122,7 @@ public class BatchRollupJobTest {
         Env.getCurrentEnv().createTable(createTableStmt);
 
         // batch add 3 rollups
-        String stmtStr = "alter table db1.tbl2 add rollup r1(k1) duplicate key(k1), r2(k1, k2) duplicate key(k1), r3(k2) duplicate key(k2);";
+        String stmtStr = "alter table db1.tbl2 add rollup r1(k3) duplicate key(k3), r2(k2, k1) duplicate key(k2), r3(k2) duplicate key(k2);";
         AlterTableStmt alterTableStmt = (AlterTableStmt) UtFrameUtils.parseAndAnalyzeStmt(stmtStr, ctx);
         Env.getCurrentEnv().getAlterInstance().processAlterTable(alterTableStmt);
 
@@ -130,10 +130,11 @@ public class BatchRollupJobTest {
         Assert.assertEquals(3, alterJobs.size());
         List<Long> jobIds = Lists.newArrayList(alterJobs.keySet());
 
-        Database db = Env.getCurrentInternalCatalog().getDbNullable("default_cluster:db1");
+        Database db = Env.getCurrentInternalCatalog().getDbNullable("db1");
         Assert.assertNotNull(db);
         OlapTable tbl = (OlapTable) db.getTableNullable("tbl2");
         Assert.assertNotNull(tbl);
+
 
         for (AlterJobV2 alterJobV2 : alterJobs.values()) {
             if (alterJobV2.getType() != AlterJobV2.JobType.ROLLUP) {
@@ -142,7 +143,7 @@ public class BatchRollupJobTest {
             while (!alterJobV2.getJobState().isFinalState()) {
                 System.out.println(
                         "rollup job " + alterJobV2.getJobId() + " is running. state: " + alterJobV2.getJobState());
-                Thread.sleep(5000);
+                Thread.sleep(1000);
             }
             System.out.println("rollup job " + alterJobV2.getJobId() + " is done. state: " + alterJobV2.getJobState());
             Assert.assertEquals(AlterJobV2.JobState.FINISHED, alterJobV2.getJobState());
@@ -163,8 +164,18 @@ public class BatchRollupJobTest {
             break;
         }
 
+        int finishedJobNum = 0;
+        for (AlterJobV2 alterJobV2 : alterJobs.values()) {
+            if (alterJobV2.getType() != AlterJobV2.JobType.ROLLUP) {
+                continue;
+            }
+            if (alterJobV2.getJobState() == AlterJobV2.JobState.FINISHED) {
+                ++finishedJobNum;
+            }
+        }
+
         for (Partition partition : tbl.getPartitions()) {
-            Assert.assertEquals(2, partition.getMaterializedIndices(IndexExtState.VISIBLE).size());
+            Assert.assertEquals(finishedJobNum + 1, partition.getMaterializedIndices(IndexExtState.VISIBLE).size());
         }
     }
 }

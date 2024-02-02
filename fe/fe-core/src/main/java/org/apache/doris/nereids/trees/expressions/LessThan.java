@@ -18,24 +18,32 @@
 package org.apache.doris.nereids.trees.expressions;
 
 import org.apache.doris.nereids.exceptions.UnboundException;
+import org.apache.doris.nereids.trees.expressions.functions.PropagateNullable;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 
 /**
  * Less than expression: a < b.
  */
-public class LessThan extends ComparisonPredicate {
-    /**
-     * Constructor of Less Than Comparison Predicate.
-     *
-     * @param left  left child of Less Than
-     * @param right right child of Less Than
-     */
+public class LessThan extends ComparisonPredicate implements PropagateNullable {
     public LessThan(Expression left, Expression right) {
-        super(left, right, "<");
+        this(left, right, false);
+    }
+
+    public LessThan(Expression left, Expression right, boolean inferred) {
+        super(ImmutableList.of(left, right), "<", inferred);
+    }
+
+    private LessThan(List<Expression> children) {
+        this(children, false);
+    }
+
+    private LessThan(List<Expression> children, boolean inferred) {
+        super(children, "<", inferred);
     }
 
     @Override
@@ -51,7 +59,12 @@ public class LessThan extends ComparisonPredicate {
     @Override
     public LessThan withChildren(List<Expression> children) {
         Preconditions.checkArgument(children.size() == 2);
-        return new LessThan(children.get(0), children.get(1));
+        return new LessThan(children, this.isInferred());
+    }
+
+    @Override
+    public Expression withInferred(boolean inferred) {
+        return new LessThan(this.children, inferred);
     }
 
     @Override

@@ -17,15 +17,15 @@
 
 suite("test_join_with_projection") {
     sql """
-        drop table if exists outerjoin_A;
+        drop table if exists test_join_with_projection_outerjoin_A;
     """
 
     sql """
-        drop table if exists outerjoin_B;
+        drop table if exists test_join_with_projection_outerjoin_B;
     """
 
     sql """
-        create table outerjoin_A ( a int not null )
+        create table if not exists test_join_with_projection_outerjoin_A ( a int not null )
         ENGINE=OLAP
         DISTRIBUTED BY HASH(a) BUCKETS 1
         PROPERTIES (
@@ -36,7 +36,7 @@ suite("test_join_with_projection") {
     """
 
     sql """
-        create table outerjoin_B ( a int not null )
+        create table if not exists test_join_with_projection_outerjoin_B ( a int not null )
         ENGINE=OLAP
         DISTRIBUTED BY HASH(a) BUCKETS 1
         PROPERTIES (
@@ -47,11 +47,11 @@ suite("test_join_with_projection") {
     """
 
     sql """
-        insert into outerjoin_A values( 1 );
+        insert into test_join_with_projection_outerjoin_A values( 1 );
     """
 
     sql """
-        insert into outerjoin_B values( 1 );
+        insert into test_join_with_projection_outerjoin_B values( 1 );
     """
 
     qt_select """
@@ -63,20 +63,51 @@ suite("test_join_with_projection") {
             END AS c0
         FROM 
             (SELECT a AS c0
-            FROM outerjoin_A
+            FROM test_join_with_projection_outerjoin_A
             ) AS subq_1
         RIGHT JOIN 
             (SELECT a AS c0
-            FROM outerjoin_B
+            FROM test_join_with_projection_outerjoin_B
             ) AS subq_2
             ON (subq_1.c0 = subq_2.c0 );
     """
 
     sql """
-        drop table if exists outerjoin_A;
+        drop table if exists test_join_with_projection_outerjoin_A;
     """
 
     sql """
-        drop table if exists outerjoin_B;
+        drop table if exists test_join_with_projection_outerjoin_B;
     """
+
+    sql """set enable_nereids_planner=false;"""
+    sql """drop table if exists c5870_t;"""
+    sql """create table  c5870_t ( 
+            order_item_seq_id varchar(80) NOT NULL,
+            last_updated_stamp datetime,
+            quantity DECIMAL(18, 2)
+            )
+            ENGINE=OLAP
+            DISTRIBUTED BY HASH(order_item_seq_id) BUCKETS 1
+            PROPERTIES (
+            "replication_allocation" = "tag.location.default: 1",
+            "in_memory" = "false",
+            "storage_format" = "V2"
+            );
+            """
+    sql """with c5870_t_pk_set AS 
+                (SELECT oi.order_item_seq_id,
+                    oi.quantity
+                FROM `c5870_t` oi
+                WHERE order_item_seq_id >= 
+                    (SELECT last_updated_stamp
+                    FROM `c5870_t` )
+                    ORDER BY  oi.last_updated_stamp limit 1 )
+                SELECT order_item_seq_id
+            FROM 
+                (SELECT oia.order_item_seq_id
+                FROM `c5870_t` oia
+                INNER JOIN c5870_t_pk_set lips
+                    ON true ) oia ;"""
+    sql """drop table if exists c5870_t;"""
 }

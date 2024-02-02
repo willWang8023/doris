@@ -19,34 +19,41 @@
 // and modified by Doris
 
 #pragma once
+#include <glog/logging.h>
 #include <pdqsort.h>
+#include <stddef.h>
+#include <stdint.h>
 
+#include <algorithm>
+#include <boost/iterator/iterator_facade.hpp>
+#include <utility>
+#include <vector>
+
+#include "common/compiler_util.h" // IWYU pragma: keep
 #include "util/simd/bits.h"
+#include "vec/columns/column.h"
+#include "vec/columns/column_nullable.h"
+#include "vec/columns/column_string.h"
+#include "vec/common/memcmp_small.h"
+#include "vec/common/string_ref.h"
 #include "vec/core/block.h"
 #include "vec/core/sort_description.h"
+#include "vec/core/types.h"
+
+namespace doris {
+namespace vectorized {
+template <typename T>
+class ColumnDecimal;
+template <typename>
+class ColumnVector;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 
 /// Sort one block by `description`. If limit != 0, then the partial sort of the first `limit` rows is produced.
-void sort_block(Block& block, const SortDescription& description, UInt64 limit = 0);
-
-/** Used only in StorageMergeTree to sort the data with INSERT.
-  * Sorting is stable. This is important for keeping the order of rows in the CollapsingMergeTree engine
-  *  - because based on the order of rows it is determined whether to delete or leave groups of rows when collapsing.
-  * Collations are not supported. Partial sorting is not supported.
-  */
-void stable_sort_block(Block& block, const SortDescription& description);
-
-/** Same as stable_sort_block, but do not sort the block, but only calculate the permutation of the values,
-  *  so that you can rearrange the column values yourself.
-  */
-void stable_get_permutation(const Block& block, const SortDescription& description,
-                            IColumn::Permutation& out_permutation);
-
-/** Quickly check whether the block is already sorted. If the block is not sorted - returns false as fast as possible.
-  * Collations are not supported.
-  */
-bool is_already_sorted(const Block& block, const SortDescription& description);
+void sort_block(Block& src_block, Block& dest_block, const SortDescription& description,
+                UInt64 limit = 0);
 
 using ColumnWithSortDescription = std::pair<const IColumn*, SortColumnDescription>;
 
@@ -77,7 +84,7 @@ struct EqualRangeIterator {
         // should continue to sort this row according to current column. Using the first non-zero
         // value and first zero value after first non-zero value as two bounds, we can get an equal range here
         if (!(_cur_range_begin == 0) || !(_flags[_cur_range_begin] == 1)) {
-            _cur_range_begin = simd::find_nonzero(_flags, _cur_range_begin + 1);
+            _cur_range_begin = simd::find_one(_flags, _cur_range_begin + 1);
             if (_cur_range_begin >= _end) {
                 return false;
             }
@@ -222,6 +229,8 @@ public:
             column.get_nested_column().sort_column(this, flags, perms, range, last_column);
         } else {
             const auto& null_map = column.get_null_map_data();
+            int limit = _limit;
+            std::vector<std::pair<size_t, size_t>> is_null_ranges;
             EqualRangeIterator iterator(flags, range.first, range.second);
             while (iterator.next()) {
                 int range_begin = iterator.range_begin;
@@ -258,15 +267,26 @@ public:
                         flags[not_null_range.first] = 0;
                     }
                     if (is_null_range.first < is_null_range.second) {
+                        // do not sort null values
                         std::fill(flags.begin() + is_null_range.first,
-                                  flags.begin() + is_null_range.second, 1);
+                                  flags.begin() + is_null_range.second, 0);
 
-                        flags[is_null_range.first] = 0;
+                        if (UNLIKELY(_limit > is_null_range.first &&
+                                     _limit <= is_null_range.second)) {
+                            _limit = is_null_range.second;
+                        }
+                        is_null_ranges.push_back(std::move(is_null_range));
                     }
                 }
             }
 
             column.get_nested_column().sort_column(this, flags, perms, range, last_column);
+            _limit = limit;
+            if (!last_column) {
+                for (const auto& nr : is_null_ranges) {
+                    std::fill(flags.begin() + nr.first + 1, flags.begin() + nr.second, 1);
+                }
+            }
         }
     }
 
@@ -387,8 +407,9 @@ private:
                 return a.inline_value > b.inline_value ? 1
                                                        : (a.inline_value < b.inline_value ? -1 : 0);
             } else {
-                return memcmp_small_allow_overflow15(a.inline_value.data, a.inline_value.size,
-                                                     b.inline_value.data, b.inline_value.size);
+                return memcmp_small_allow_overflow15(
+                        reinterpret_cast<const UInt8*>(a.inline_value.data), a.inline_value.size,
+                        reinterpret_cast<const UInt8*>(b.inline_value.data), b.inline_value.size);
             }
         };
 
@@ -451,7 +472,7 @@ private:
     }
 
     const ColumnWithSortDescription& _column_with_sort_desc;
-    const int _limit;
+    mutable int _limit;
     const int _nulls_direction;
     const int _direction;
 };

@@ -18,8 +18,12 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 #include "common/status.h"
+#include "runtime/types.h"
+#include "vec/core/block.h"
+#include "vec/exprs/vexpr_fwd.h"
 
 // This file will convert Doris RowBatch to/from Arrow's RecordBatch
 // RowBatch is used by Doris query engine to exchange data between
@@ -27,7 +31,7 @@
 
 namespace arrow {
 
-class MemoryPool;
+class DataType;
 class RecordBatch;
 class Schema;
 
@@ -35,30 +39,22 @@ class Schema;
 
 namespace doris {
 
-class ObjectPool;
-class RowBatch;
 class RowDescriptor;
+
+Status convert_to_arrow_type(const TypeDescriptor& type, std::shared_ptr<arrow::DataType>* result);
 
 // Convert Doris RowDescriptor to Arrow Schema.
 Status convert_to_arrow_schema(const RowDescriptor& row_desc,
                                std::shared_ptr<arrow::Schema>* result);
 
-// Convert an Arrow Schema to a Doris RowDescriptor which will be add to
-// input pool.
-// Why we should
-Status convert_to_row_desc(ObjectPool* pool, const arrow::Schema& schema, RowDescriptor** row_desc);
+Status convert_block_arrow_schema(const vectorized::Block& block,
+                                  std::shared_ptr<arrow::Schema>* result);
 
-// Convert a Doris RowBatch to an Arrow RecordBatch. A valid Arrow Schema
-// who should match RowBatch's schema is given. Memory used by result RecordBatch
-// will be allocated from input pool.
-Status convert_to_arrow_batch(const RowBatch& batch, const std::shared_ptr<arrow::Schema>& schema,
-                              arrow::MemoryPool* pool, std::shared_ptr<arrow::RecordBatch>* result);
-
-// Convert an Arrow RecordBatch to a Doris RowBatch. A valid RowDescriptor
-// whose schema is the same with RecordBatch's should be given.
-Status convert_to_row_batch(const arrow::RecordBatch& batch, const RowDescriptor& row_desc,
-                            std::shared_ptr<RowBatch>* result);
+Status convert_expr_ctxs_arrow_schema(const vectorized::VExprContextSPtrs& output_vexpr_ctxs,
+                                      std::shared_ptr<arrow::Schema>* result);
 
 Status serialize_record_batch(const arrow::RecordBatch& record_batch, std::string* result);
+
+Status serialize_arrow_schema(std::shared_ptr<arrow::Schema>* schema, std::string* result);
 
 } // namespace doris

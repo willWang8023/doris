@@ -18,27 +18,35 @@
 #pragma once
 
 #include <fmt/format.h>
+#include <gen_cpp/Types_types.h>
+#include <stdint.h>
 
-#include <boost/format.hpp>
-#include <cstdlib>
 #include <string>
 #include <vector>
 
 #include "common/status.h"
-#include "exprs/expr_context.h"
-#include "runtime/descriptors.h"
-#include "runtime/row_batch.h"
-#include "vec/exprs/vexpr_context.h"
+#include "runtime/types.h"
+#include "util/runtime_profile.h"
+#include "vec/aggregate_functions/aggregate_function.h"
+#include "vec/data_types/data_type.h"
+#include "vec/exprs/vexpr_fwd.h"
 
 namespace doris {
+class RuntimeState;
+class TupleDescriptor;
+
+namespace vectorized {
+class Block;
+} // namespace vectorized
 
 // Table Connector for scan data from ODBC/JDBC
 class TableConnector {
 public:
-    TableConnector(const TupleDescriptor* tuple_desc, const std::string& sql_str);
+    TableConnector(const TupleDescriptor* tuple_desc, bool use_transaction,
+                   std::string_view table_name, const std::string& sql_str);
     virtual ~TableConnector() = default;
 
-    virtual Status open() = 0;
+    virtual Status init_to_write(RuntimeProfile*) = 0;
     // exec query for table
     virtual Status query() = 0;
 
@@ -47,26 +55,38 @@ public:
     virtual Status abort_trans() = 0;  // should be call after transaction abort
     virtual Status finish_trans() = 0; // should be call after transaction commit
 
+    virtual Status close(Status) = 0;
+
+    virtual Status exec_stmt_write(vectorized::Block* block,
+                                   const vectorized::VExprContextSPtrs& _output_vexpr_ctxs,
+                                   uint32_t* num_rows_sent) = 0;
+
     virtual Status exec_write_sql(const std::u16string& insert_stmt,
                                   const fmt::memory_buffer& _insert_stmt_buffer) = 0;
-    //write data into table row batch
-    Status append(const std::string& table_name, RowBatch* batch,
-                  const std::vector<ExprContext*>& _output_expr_ctxs, uint32_t start_send_row,
-                  uint32_t* num_rows_sent);
 
     //write data into table vectorized
-    Status append(const std::string& table_name, vectorized::Block* block,
-                  const std::vector<vectorized::VExprContext*>& _output_vexpr_ctxs,
-                  uint32_t start_send_row, uint32_t* num_rows_sent);
+    virtual Status append(vectorized::Block* block,
+                          const vectorized::VExprContextSPtrs& _output_vexpr_ctxs,
+                          uint32_t start_send_row, uint32_t* num_rows_sent,
+                          TOdbcTableType::type table_type = TOdbcTableType::MYSQL) = 0;
 
     void init_profile(RuntimeProfile*);
 
     std::u16string utf8_to_u16string(const char* first, const char* last);
 
+    Status convert_column_data(const vectorized::ColumnPtr& column_ptr,
+                               const vectorized::DataTypePtr& type_ptr, const TypeDescriptor& type,
+                               int row, TOdbcTableType::type table_type);
+
+    // Default max buffer size use in insert to: 50MB, normally a batch is smaller than the size
+    static constexpr uint32_t INSERT_BUFFER_SIZE = 1024l * 1024 * 50;
+
 protected:
     bool _is_open;
+    bool _use_tranaction;
     bool _is_in_transaction;
-    const TupleDescriptor* _tuple_desc;
+    std::string_view _table_name;
+    const TupleDescriptor* _tuple_desc = nullptr;
     // only use in query
     std::string _sql_str;
     // only use in write

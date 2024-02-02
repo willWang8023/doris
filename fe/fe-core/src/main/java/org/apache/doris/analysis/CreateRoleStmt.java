@@ -18,7 +18,6 @@
 package org.apache.doris.analysis;
 
 import org.apache.doris.catalog.Env;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.FeNameFormat;
@@ -44,7 +43,7 @@ public class CreateRoleStmt extends DdlStmt {
         return ifNotExists;
     }
 
-    public String getQualifiedRole() {
+    public String getRole() {
         return role;
     }
 
@@ -52,10 +51,9 @@ public class CreateRoleStmt extends DdlStmt {
     public void analyze(Analyzer analyzer) throws UserException {
         super.analyze(analyzer);
         FeNameFormat.checkRoleName(role, false /* can not be admin */, "Can not create role");
-        role = ClusterNamespace.getFullName(analyzer.getClusterName(), role);
 
         // check if current user has GRANT priv on GLOBAL level.
-        if (!Env.getCurrentEnv().getAuth().checkGlobalPriv(ConnectContext.get(), PrivPredicate.GRANT)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkGlobalPriv(ConnectContext.get(), PrivPredicate.GRANT)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR, "CREATE ROLE");
         }
     }

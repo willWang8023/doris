@@ -17,13 +17,21 @@
 
 #include "vec/exprs/vtuple_is_null_predicate.h"
 
-#include <string_view>
+#include <gen_cpp/Exprs_types.h>
+#include <glog/logging.h>
 
-#include "exprs/create_predicate_function.h"
-#include "vec/core/field.h"
-#include "vec/data_types/data_type_factory.hpp"
-#include "vec/data_types/data_type_nullable.h"
-#include "vec/functions/simple_function_factory.h"
+#include <ostream>
+#include <vector>
+
+#include "runtime/descriptors.h"
+
+namespace doris {
+class RuntimeState;
+namespace vectorized {
+class Block;
+class VExprContext;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 
@@ -40,11 +48,20 @@ Status VTupleIsNullPredicate::prepare(RuntimeState* state, const RowDescriptor& 
     DCHECK_EQ(0, _children.size());
     _column_to_check =
             _is_left_null_side ? desc.num_materialized_slots() : desc.num_materialized_slots() + 1;
+    _prepare_finished = true;
+    return Status::OK();
+}
 
+Status VTupleIsNullPredicate::open(RuntimeState* state, VExprContext* context,
+                                   FunctionContext::FunctionStateScope scope) {
+    DCHECK(_prepare_finished);
+    RETURN_IF_ERROR(VExpr::open(state, context, scope));
+    _open_finished = true;
     return Status::OK();
 }
 
 Status VTupleIsNullPredicate::execute(VExprContext* context, Block* block, int* result_column_id) {
+    DCHECK(_open_finished || _getting_const_col);
     *result_column_id = _column_to_check;
     return Status::OK();
 }

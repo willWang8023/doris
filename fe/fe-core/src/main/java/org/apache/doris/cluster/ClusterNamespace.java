@@ -17,7 +17,7 @@
 
 package org.apache.doris.cluster;
 
-import org.apache.doris.mysql.privilege.PaloAuth;
+import org.apache.doris.mysql.privilege.Auth;
 
 import com.google.common.base.Strings;
 
@@ -28,21 +28,9 @@ import com.google.common.base.Strings;
  * in stmt's analyze.
  *
  */
-
 public class ClusterNamespace {
 
-    public static final String CLUSTER_DELIMITER = ":";
-
-    public static String getFullName(String cluster, String name) {
-        return linkString(cluster, name);
-    }
-
-    public static String getClusterNameFromFullName(String fullName) {
-        if (!checkName(fullName)) {
-            return null;
-        }
-        return extract(fullName, 0);
-    }
+    private static final String CLUSTER_DELIMITER = ":";
 
     public static String getNameFromFullName(String fullName) {
         if (!checkName(fullName)) {
@@ -63,8 +51,8 @@ public class ClusterNamespace {
         if (Strings.isNullOrEmpty(cluster) || Strings.isNullOrEmpty(name)) {
             return null;
         }
-        if (name.contains(CLUSTER_DELIMITER) || name.equalsIgnoreCase(PaloAuth.ROOT_USER)
-                || name.equalsIgnoreCase(PaloAuth.ADMIN_USER)) {
+        if (name.contains(CLUSTER_DELIMITER) || name.equalsIgnoreCase(Auth.ROOT_USER)
+                || name.equalsIgnoreCase(Auth.ADMIN_USER)) {
             return name;
         }
         final StringBuilder sb = new StringBuilder(cluster);

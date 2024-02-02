@@ -17,13 +17,17 @@
 
 #include "vec/runtime/vdata_stream_mgr.h"
 
-#include "gen_cpp/internal_service.pb.h"
-#include "runtime/descriptors.h"
-#include "runtime/primitive_type.h"
-#include "runtime/raw_value.h"
-#include "runtime/runtime_state.h"
-#include "util/doris_metrics.h"
-#include "util/runtime_profile.h"
+#include <gen_cpp/Types_types.h>
+#include <gen_cpp/internal_service.pb.h>
+#include <gen_cpp/types.pb.h>
+#include <stddef.h>
+
+#include <ostream>
+#include <string>
+#include <vector>
+
+#include "common/logging.h"
+#include "util/hash_util.hpp"
 #include "vec/runtime/vdata_stream_recvr.h"
 
 namespace doris {
@@ -35,26 +39,31 @@ VDataStreamMgr::VDataStreamMgr() {
 
 VDataStreamMgr::~VDataStreamMgr() {
     // TODO: metric
+    auto receiver_iterator = _receiver_map.begin();
+    while (receiver_iterator != _receiver_map.end()) {
+        // Has to call close here, because receiver will check if the receiver is closed.
+        // It will core during graceful stop.
+        receiver_iterator->second->close();
+    }
 }
 
 inline uint32_t VDataStreamMgr::get_hash_value(const TUniqueId& fragment_instance_id,
                                                PlanNodeId node_id) {
-    uint32_t value = RawValue::get_hash_value(&fragment_instance_id.lo, TYPE_BIGINT, 0);
-    value = RawValue::get_hash_value(&fragment_instance_id.hi, TYPE_BIGINT, value);
-    value = RawValue::get_hash_value(&node_id, TYPE_INT, value);
+    uint32_t value = HashUtil::hash(&fragment_instance_id.lo, 8, 0);
+    value = HashUtil::hash(&fragment_instance_id.hi, 8, value);
+    value = HashUtil::hash(&node_id, 4, value);
     return value;
 }
 
 std::shared_ptr<VDataStreamRecvr> VDataStreamMgr::create_recvr(
         RuntimeState* state, const RowDescriptor& row_desc, const TUniqueId& fragment_instance_id,
-        PlanNodeId dest_node_id, int num_senders, int buffer_size, RuntimeProfile* profile,
-        bool is_merging, std::shared_ptr<QueryStatisticsRecvr> sub_plan_query_statistics_recvr) {
-    DCHECK(profile != NULL);
-    VLOG_FILE << "creating receiver for fragment=" << fragment_instance_id
+        PlanNodeId dest_node_id, int num_senders, RuntimeProfile* profile, bool is_merging) {
+    DCHECK(profile != nullptr);
+    VLOG_FILE << "creating receiver for fragment=" << print_id(fragment_instance_id)
               << ", node=" << dest_node_id;
-    std::shared_ptr<VDataStreamRecvr> recvr(new VDataStreamRecvr(
-            this, row_desc, fragment_instance_id, dest_node_id, num_senders, is_merging,
-            buffer_size, profile, sub_plan_query_statistics_recvr));
+    std::shared_ptr<VDataStreamRecvr> recvr(new VDataStreamRecvr(this, state, row_desc,
+                                                                 fragment_instance_id, dest_node_id,
+                                                                 num_senders, is_merging, profile));
     uint32_t hash_value = get_hash_value(fragment_instance_id, dest_node_id);
     std::lock_guard<std::mutex> l(_lock);
     _fragment_stream_set.insert(std::make_pair(fragment_instance_id, dest_node_id));
@@ -65,10 +74,13 @@ std::shared_ptr<VDataStreamRecvr> VDataStreamMgr::create_recvr(
 std::shared_ptr<VDataStreamRecvr> VDataStreamMgr::find_recvr(const TUniqueId& fragment_instance_id,
                                                              PlanNodeId node_id,
                                                              bool acquire_lock) {
-    VLOG_ROW << "looking up fragment_instance_id=" << fragment_instance_id << ", node=" << node_id;
+    VLOG_ROW << "looking up fragment_instance_id=" << print_id(fragment_instance_id)
+             << ", node=" << node_id;
     size_t hash_value = get_hash_value(fragment_instance_id, node_id);
+    // Create lock guard and not own lock currently and will lock conditionally
+    std::unique_lock recvr_lock(_lock, std::defer_lock);
     if (acquire_lock) {
-        _lock.lock();
+        recvr_lock.lock();
     }
     std::pair<StreamMap::iterator, StreamMap::iterator> range =
             _receiver_map.equal_range(hash_value);
@@ -76,15 +88,9 @@ std::shared_ptr<VDataStreamRecvr> VDataStreamMgr::find_recvr(const TUniqueId& fr
         auto recvr = range.first->second;
         if (recvr->fragment_instance_id() == fragment_instance_id &&
             recvr->dest_node_id() == node_id) {
-            if (acquire_lock) {
-                _lock.unlock();
-            }
             return recvr;
         }
         ++range.first;
-    }
-    if (acquire_lock) {
-        _lock.unlock();
     }
     return std::shared_ptr<VDataStreamRecvr>();
 }
@@ -102,33 +108,43 @@ Status VDataStreamMgr::transmit_block(const PTransmitDataParams* request,
         // As a consequence, find_recvr() may return an innocuous NULL if a thread
         // calling deregister_recvr() beat the thread calling find_recvr()
         // in acquiring _lock.
+        //
+        // e.g. for broadcast join build side, only one instance will build the hash table,
+        // all other instances don't need build side data and will close the data stream receiver.
+        //
         // TODO: Rethink the lifecycle of DataStreamRecvr to distinguish
         // errors from receiver-initiated teardowns.
-        return Status::OK();
+        return Status::EndOfFile("data stream receiver closed");
     }
 
-    // request can only be used before calling recvr's add_batch or when request
-    // is the last for the sender, because request maybe released after it's batch
-    // is consumed by ExchangeNode.
-    if (request->has_query_statistics()) {
-        recvr->add_sub_plan_statistics(request->query_statistics(), request->sender_id());
+    // Lock the fragment context to ensure the runtime state and other objects are not
+    // deconstructed
+    auto ctx_lock = recvr->task_exec_ctx();
+    if (ctx_lock == nullptr) {
+        // Do not return internal error, because when query finished, the downstream node
+        // may finish before upstream node. And the object maybe deconstructed. If return error
+        // then the upstream node may report error status to FE, the query is failed.
+        return Status::EndOfFile("data stream receiver is deconstructed");
     }
 
     bool eos = request->eos();
     if (request->has_block()) {
-        recvr->add_block(request->block(), request->sender_id(), request->be_number(),
-                         request->packet_seq(), eos ? nullptr : done);
+        RETURN_IF_ERROR(recvr->add_block(request->block(), request->sender_id(),
+                                         request->be_number(), request->packet_seq(),
+                                         eos ? nullptr : done));
     }
 
     if (eos) {
-        recvr->remove_sender(request->sender_id(), request->be_number());
+        Status exec_status =
+                request->has_exec_status() ? Status::create(request->exec_status()) : Status::OK();
+        recvr->remove_sender(request->sender_id(), request->be_number(), exec_status);
     }
     return Status::OK();
 }
 
 Status VDataStreamMgr::deregister_recvr(const TUniqueId& fragment_instance_id, PlanNodeId node_id) {
     std::shared_ptr<VDataStreamRecvr> targert_recvr;
-    VLOG_QUERY << "deregister_recvr(): fragment_instance_id=" << fragment_instance_id
+    VLOG_QUERY << "deregister_recvr(): fragment_instance_id=" << print_id(fragment_instance_id)
                << ", node=" << node_id;
     size_t hash_value = get_hash_value(fragment_instance_id, node_id);
     {
@@ -151,19 +167,19 @@ Status VDataStreamMgr::deregister_recvr(const TUniqueId& fragment_instance_id, P
     // Notify concurrent add_data() requests that the stream has been terminated.
     // cancel_stream maybe take a long time, so we handle it out of lock.
     if (targert_recvr) {
-        targert_recvr->cancel_stream();
+        targert_recvr->cancel_stream(Status::OK());
         return Status::OK();
     } else {
         std::stringstream err;
-        err << "unknown row receiver id: fragment_instance_id=" << fragment_instance_id
+        err << "unknown row receiver id: fragment_instance_id=" << print_id(fragment_instance_id)
             << " node_id=" << node_id;
         LOG(ERROR) << err.str();
         return Status::InternalError(err.str());
     }
 }
 
-void VDataStreamMgr::cancel(const TUniqueId& fragment_instance_id) {
-    VLOG_QUERY << "cancelling all streams for fragment=" << fragment_instance_id;
+void VDataStreamMgr::cancel(const TUniqueId& fragment_instance_id, Status exec_status) {
+    VLOG_QUERY << "cancelling all streams for fragment=" << print_id(fragment_instance_id);
     std::vector<std::shared_ptr<VDataStreamRecvr>> recvrs;
     {
         std::lock_guard<std::mutex> l(_lock);
@@ -171,10 +187,10 @@ void VDataStreamMgr::cancel(const TUniqueId& fragment_instance_id) {
                 _fragment_stream_set.lower_bound(std::make_pair(fragment_instance_id, 0));
         while (i != _fragment_stream_set.end() && i->first == fragment_instance_id) {
             std::shared_ptr<VDataStreamRecvr> recvr = find_recvr(i->first, i->second, false);
-            if (recvr == NULL) {
+            if (recvr == nullptr) {
                 // keep going but at least log it
                 std::stringstream err;
-                err << "cancel(): missing in stream_map: fragment=" << i->first
+                err << "cancel(): missing in stream_map: fragment=" << print_id(i->first)
                     << " node=" << i->second;
                 LOG(ERROR) << err.str();
             } else {
@@ -186,7 +202,7 @@ void VDataStreamMgr::cancel(const TUniqueId& fragment_instance_id) {
 
     // cancel_stream maybe take a long time, so we handle it out of lock.
     for (auto& it : recvrs) {
-        it->cancel_stream();
+        it->cancel_stream(exec_status);
     }
 }
 

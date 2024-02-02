@@ -21,7 +21,6 @@ import org.apache.doris.analysis.AddBackendClause;
 import org.apache.doris.analysis.AddFollowerClause;
 import org.apache.doris.analysis.AddObserverClause;
 import org.apache.doris.analysis.AlterClause;
-import org.apache.doris.analysis.AlterLoadErrorUrlClause;
 import org.apache.doris.analysis.CancelAlterSystemStmt;
 import org.apache.doris.analysis.CancelStmt;
 import org.apache.doris.analysis.DecommissionBackendClause;
@@ -29,25 +28,25 @@ import org.apache.doris.analysis.DropBackendClause;
 import org.apache.doris.analysis.DropFollowerClause;
 import org.apache.doris.analysis.DropObserverClause;
 import org.apache.doris.analysis.ModifyBackendClause;
+import org.apache.doris.analysis.ModifyBackendHostNameClause;
 import org.apache.doris.analysis.ModifyBrokerClause;
+import org.apache.doris.analysis.ModifyFrontendHostNameClause;
 import org.apache.doris.catalog.Database;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.TabletInvertedIndex;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
-import org.apache.doris.common.ErrorCode;
-import org.apache.doris.common.ErrorReport;
-import org.apache.doris.common.Pair;
 import org.apache.doris.common.UserException;
+import org.apache.doris.common.util.NetUtils;
 import org.apache.doris.ha.FrontendNodeType;
 import org.apache.doris.system.Backend;
 import org.apache.doris.system.SystemInfoService;
+import org.apache.doris.system.SystemInfoService.HostInfo;
 
 import com.google.common.base.Preconditions;
-import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
-import org.apache.commons.lang.NotImplementedException;
+import org.apache.commons.lang3.NotImplementedException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -72,22 +71,23 @@ public class SystemHandler extends AlterHandler {
         runAlterJobV2();
     }
 
-    // check all decommissioned backends, if there is no tablet on that backend, drop it.
+    // check all decommissioned backends, if there is no available tablet on that backend, drop it.
     private void runAlterJobV2() {
         SystemInfoService systemInfoService = Env.getCurrentSystemInfo();
         TabletInvertedIndex invertedIndex = Env.getCurrentInvertedIndex();
         // check if decommission is finished
-        for (Long beId : systemInfoService.getBackendIds(false)) {
+        for (Long beId : systemInfoService.getAllBackendIds(false)) {
             Backend backend = systemInfoService.getBackend(beId);
             if (backend == null || !backend.isDecommissioned()) {
                 continue;
             }
 
             List<Long> backendTabletIds = invertedIndex.getTabletIdsByBackendId(beId);
-            if (backendTabletIds.isEmpty() && Config.drop_backend_after_decommission) {
+            boolean hasWal = checkWal(backend);
+            if (Config.drop_backend_after_decommission && checkTablets(beId, backendTabletIds) && hasWal) {
                 try {
                     systemInfoService.dropBackend(beId);
-                    LOG.info("no tablet on decommission backend {}, drop it", beId);
+                    LOG.info("no available tablet on decommission backend {}, drop it", beId);
                 } catch (DdlException e) {
                     // does not matter, may be backend not exist
                     LOG.info("backend {} is dropped failed after decommission {}", beId, e.getMessage());
@@ -95,19 +95,21 @@ public class SystemHandler extends AlterHandler {
                 continue;
             }
 
-            LOG.info("backend {} lefts {} replicas to decommission: {}", beId, backendTabletIds.size(),
-                    backendTabletIds.subList(0, Math.min(10, backendTabletIds.size())));
+            LOG.info("backend {} lefts {} replicas to decommission: {}{}", beId, backendTabletIds.size(),
+                    backendTabletIds.subList(0, Math.min(10, backendTabletIds.size())),
+                    hasWal ? "; and has unfinished WALs" : "");
         }
     }
 
     @Override
     public List<List<Comparable>> getAlterJobInfosByDb(Database db) {
-        throw new NotImplementedException();
+        throw new NotImplementedException("getAlterJobInfosByDb is not supported in SystemHandler");
     }
 
     @Override
     // add synchronized to avoid process 2 or more stmts at same time
-    public synchronized void process(List<AlterClause> alterClauses, String clusterName, Database dummyDb,
+    public synchronized void process(String rawSql, List<AlterClause> alterClauses,
+            Database dummyDb,
             OlapTable dummyTbl) throws UserException {
         Preconditions.checkArgument(alterClauses.size() == 1);
         AlterClause alterClause = alterClauses.get(0);
@@ -115,18 +117,7 @@ public class SystemHandler extends AlterHandler {
         if (alterClause instanceof AddBackendClause) {
             // add backend
             AddBackendClause addBackendClause = (AddBackendClause) alterClause;
-            final String destClusterName = addBackendClause.getDestCluster();
-
-            if ((!Strings.isNullOrEmpty(destClusterName) || addBackendClause.isFree())
-                    && Config.disable_cluster_feature) {
-                ErrorReport.reportAnalysisException(ErrorCode.ERR_INVALID_OPERATION, "ADD BACKEND TO CLUSTER");
-            }
-
-            if (!Strings.isNullOrEmpty(destClusterName) && Env.getCurrentEnv().getCluster(destClusterName) == null) {
-                throw new DdlException("Cluster: " + destClusterName + " does not exist.");
-            }
-            Env.getCurrentSystemInfo().addBackends(addBackendClause.getHostPortPairs(), addBackendClause.isFree(),
-                    addBackendClause.getDestCluster(), addBackendClause.getTagMap());
+            Env.getCurrentSystemInfo().addBackends(addBackendClause.getHostInfos(), addBackendClause.getTagMap());
         } else if (alterClause instanceof DropBackendClause) {
             // drop backend
             DropBackendClause dropBackendClause = (DropBackendClause) alterClause;
@@ -136,7 +127,13 @@ public class SystemHandler extends AlterHandler {
                         + "All data on this backend will be discarded permanently. "
                         + "If you insist, use DROPP instead of DROP");
             }
-            Env.getCurrentSystemInfo().dropBackends(dropBackendClause.getHostPortPairs());
+            if (dropBackendClause.getHostInfos().isEmpty()) {
+                // drop by id
+                Env.getCurrentSystemInfo().dropBackendsByIds(dropBackendClause.getIds());
+            } else {
+                // drop by host
+                Env.getCurrentSystemInfo().dropBackends(dropBackendClause.getHostInfos());
+            }
         } else if (alterClause instanceof DecommissionBackendClause) {
             // decommission
             DecommissionBackendClause decommissionBackendClause = (DecommissionBackendClause) alterClause;
@@ -154,32 +151,63 @@ public class SystemHandler extends AlterHandler {
 
         } else if (alterClause instanceof AddObserverClause) {
             AddObserverClause clause = (AddObserverClause) alterClause;
-            Env.getCurrentEnv().addFrontend(FrontendNodeType.OBSERVER, clause.getHost(), clause.getPort());
+            Env.getCurrentEnv().addFrontend(FrontendNodeType.OBSERVER, clause.getHost(),
+                    clause.getPort(), "");
         } else if (alterClause instanceof DropObserverClause) {
             DropObserverClause clause = (DropObserverClause) alterClause;
-            Env.getCurrentEnv().dropFrontend(FrontendNodeType.OBSERVER, clause.getHost(), clause.getPort());
+            Env.getCurrentEnv().dropFrontend(FrontendNodeType.OBSERVER, clause.getHost(),
+                    clause.getPort());
         } else if (alterClause instanceof AddFollowerClause) {
             AddFollowerClause clause = (AddFollowerClause) alterClause;
-            Env.getCurrentEnv().addFrontend(FrontendNodeType.FOLLOWER, clause.getHost(), clause.getPort());
+            Env.getCurrentEnv().addFrontend(FrontendNodeType.FOLLOWER, clause.getHost(),
+                    clause.getPort(), "");
         } else if (alterClause instanceof DropFollowerClause) {
             DropFollowerClause clause = (DropFollowerClause) alterClause;
-            Env.getCurrentEnv().dropFrontend(FrontendNodeType.FOLLOWER, clause.getHost(), clause.getPort());
+            Env.getCurrentEnv().dropFrontend(FrontendNodeType.FOLLOWER, clause.getHost(),
+                    clause.getPort());
         } else if (alterClause instanceof ModifyBrokerClause) {
             ModifyBrokerClause clause = (ModifyBrokerClause) alterClause;
             Env.getCurrentEnv().getBrokerMgr().execute(clause);
-        } else if (alterClause instanceof AlterLoadErrorUrlClause) {
-            AlterLoadErrorUrlClause clause = (AlterLoadErrorUrlClause) alterClause;
-            Env.getCurrentEnv().getLoadInstance().setLoadErrorHubInfo(clause.getProperties());
         } else if (alterClause instanceof ModifyBackendClause) {
             Env.getCurrentSystemInfo().modifyBackends(((ModifyBackendClause) alterClause));
+        } else if (alterClause instanceof ModifyFrontendHostNameClause) {
+            ModifyFrontendHostNameClause clause = (ModifyFrontendHostNameClause) alterClause;
+            Env.getCurrentEnv().modifyFrontendHostName(clause.getHost(), clause.getPort(), clause.getNewHost());
+        } else if (alterClause instanceof ModifyBackendHostNameClause) {
+            Env.getCurrentSystemInfo().modifyBackendHost((ModifyBackendHostNameClause) alterClause);
         } else {
             Preconditions.checkState(false, alterClause.getClass());
         }
     }
 
+    /*
+     * check if the specified backends can be dropped
+     * 1. backend does not have any tablet.
+     * 2. all tablets in backend have been recycled.
+     */
+    private boolean checkTablets(Long beId, List<Long> backendTabletIds) {
+        if (backendTabletIds.isEmpty()) {
+            return true;
+        }
+        if (backendTabletIds.size() < Config.decommission_tablet_check_threshold
+                && Env.getCurrentRecycleBin().allTabletsInRecycledStatus(backendTabletIds)) {
+            LOG.info("tablet size is {}, all tablets on decommissioned backend {} have been recycled,"
+                    + " so this backend will be dropped immediately", backendTabletIds.size(), beId);
+            return true;
+        }
+        return false;
+    }
+
+    private boolean checkWal(Backend backend) {
+        return Env.getCurrentEnv().getGroupCommitManager().getAllWalQueueSize(backend) == 0;
+    }
+
     private List<Backend> checkDecommission(DecommissionBackendClause decommissionBackendClause)
             throws DdlException {
-        return checkDecommission(decommissionBackendClause.getHostPortPairs());
+        if (decommissionBackendClause.getHostInfos().isEmpty()) {
+            return checkDecommissionByIds(decommissionBackendClause.getIds());
+        }
+        return checkDecommission(decommissionBackendClause.getHostInfos());
     }
 
     /*
@@ -188,15 +216,40 @@ public class SystemHandler extends AlterHandler {
      * 2. after decommission, the remaining backend num should meet the replication num.
      * 3. after decommission, The remaining space capacity can store data on decommissioned backends.
      */
-    public static List<Backend> checkDecommission(List<Pair<String, Integer>> hostPortPairs)
+    public static List<Backend> checkDecommission(List<HostInfo> hostInfos)
             throws DdlException {
         SystemInfoService infoService = Env.getCurrentSystemInfo();
         List<Backend> decommissionBackends = Lists.newArrayList();
         // check if exist
-        for (Pair<String, Integer> pair : hostPortPairs) {
-            Backend backend = infoService.getBackendWithHeartbeatPort(pair.first, pair.second);
+        for (HostInfo hostInfo : hostInfos) {
+            Backend backend = infoService.getBackendWithHeartbeatPort(hostInfo.getHost(),
+                    hostInfo.getPort());
             if (backend == null) {
-                throw new DdlException("Backend does not exist[" + pair.first + ":" + pair.second + "]");
+                throw new DdlException("Backend does not exist["
+                        + NetUtils.getHostPortInAccessibleFormat(hostInfo.getHost(), hostInfo.getPort()) + "]");
+            }
+            if (backend.isDecommissioned()) {
+                // already under decommission, ignore it
+                continue;
+            }
+            decommissionBackends.add(backend);
+        }
+
+        // TODO(cmy): check if replication num can be met
+        // TODO(cmy): check remaining space
+
+        return decommissionBackends;
+    }
+
+    public static List<Backend> checkDecommissionByIds(List<String> ids)
+            throws DdlException {
+        SystemInfoService infoService = Env.getCurrentSystemInfo();
+        List<Backend> decommissionBackends = Lists.newArrayList();
+        // check if exist
+        for (String id : ids) {
+            Backend backend = infoService.getBackend(Long.parseLong(id));
+            if (backend == null) {
+                throw new DdlException("Backend does not exist, backend id is " + id);
             }
             if (backend.isDecommissioned()) {
                 // already under decommission, ignore it
@@ -214,33 +267,50 @@ public class SystemHandler extends AlterHandler {
     @Override
     public synchronized void cancel(CancelStmt stmt) throws DdlException {
         CancelAlterSystemStmt cancelAlterSystemStmt = (CancelAlterSystemStmt) stmt;
-        cancelAlterSystemStmt.getHostPortPairs();
-
         SystemInfoService infoService = Env.getCurrentSystemInfo();
         // check if backends is under decommission
-        List<Backend> backends = Lists.newArrayList();
-        List<Pair<String, Integer>> hostPortPairs = cancelAlterSystemStmt.getHostPortPairs();
-        for (Pair<String, Integer> pair : hostPortPairs) {
-            // check if exist
-            Backend backend = infoService.getBackendWithHeartbeatPort(pair.first, pair.second);
-            if (backend == null) {
-                throw new DdlException("Backend does not exists[" + pair.first + "]");
+        List<HostInfo> hostInfos = cancelAlterSystemStmt.getHostInfos();
+        if (hostInfos.isEmpty()) {
+            List<String> ids = cancelAlterSystemStmt.getIds();
+            for (String id : ids) {
+                Backend backend = infoService.getBackend(Long.parseLong(id));
+                if (backend == null) {
+                    throw new DdlException("Backend does not exist["
+                            + id + "]");
+                }
+                if (!backend.isDecommissioned()) {
+                    // it's ok. just log
+                    LOG.info("backend is not decommissioned[{}]", backend.getId());
+                    continue;
+                }
+                if (backend.setDecommissioned(false)) {
+                    Env.getCurrentEnv().getEditLog().logBackendStateChange(backend);
+                } else {
+                    LOG.info("backend is not decommissioned[{}]", backend.getHost());
+                }
             }
 
-            if (!backend.isDecommissioned()) {
-                // it's ok. just log
-                LOG.info("backend is not decommissioned[{}]", pair.first);
-                continue;
-            }
+        } else {
+            for (HostInfo hostInfo : hostInfos) {
+                // check if exist
+                Backend backend = infoService.getBackendWithHeartbeatPort(hostInfo.getHost(),
+                        hostInfo.getPort());
+                if (backend == null) {
+                    throw new DdlException("Backend does not exist["
+                            + NetUtils.getHostPortInAccessibleFormat(hostInfo.getHost(), hostInfo.getPort()) + "]");
+                }
 
-            backends.add(backend);
-        }
+                if (!backend.isDecommissioned()) {
+                    // it's ok. just log
+                    LOG.info("backend is not decommissioned[{}]", backend.getId());
+                    continue;
+                }
 
-        for (Backend backend : backends) {
-            if (backend.setDecommissioned(false)) {
-                Env.getCurrentEnv().getEditLog().logBackendStateChange(backend);
-            } else {
-                LOG.info("backend is not decommissioned[{}]", backend.getHost());
+                if (backend.setDecommissioned(false)) {
+                    Env.getCurrentEnv().getEditLog().logBackendStateChange(backend);
+                } else {
+                    LOG.info("backend is not decommissioned[{}]", backend.getHost());
+                }
             }
         }
     }

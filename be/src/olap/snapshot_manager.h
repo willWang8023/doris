@@ -17,32 +17,26 @@
 
 #pragma once
 
-#include <condition_variable>
-#include <ctime>
-#include <list>
-#include <map>
-#include <mutex>
-#include <set>
+#include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "common/status.h"
-#include "olap/data_dir.h"
-#include "olap/field.h"
-#include "olap/olap_common.h"
-#include "olap/olap_define.h"
-#include "olap/push_handler.h"
-#include "olap/tablet.h"
-#include "olap/tablet_meta_manager.h"
-#include "util/doris_metrics.h"
-#include "util/file_utils.h"
+#include "olap/rowset/pending_rowset_helper.h"
+#include "olap/rowset/rowset_fwd.h"
+#include "olap/tablet_fwd.h"
 
 namespace doris {
+class RowsetMetaPB;
+class TSnapshotRequest;
+struct RowsetId;
+class StorageEngine;
+class MemTracker;
 
 class SnapshotManager {
 public:
-    ~SnapshotManager() {}
+    SnapshotManager(StorageEngine& engine);
+    ~SnapshotManager();
 
     /// Create a snapshot
     /// snapshot_path: out param, the dir of snapshot
@@ -57,16 +51,13 @@ public:
     // @param snapshot_path [in] 要被释放的snapshot的路径，只包含到ID
     Status release_snapshot(const std::string& snapshot_path);
 
-    static SnapshotManager* instance();
-
-    Status convert_rowset_ids(const std::string& clone_dir, int64_t tablet_id, int64_t replica_id,
-                              const int32_t& schema_hash);
+    Result<std::vector<PendingRowsetGuard>> convert_rowset_ids(const std::string& clone_dir,
+                                                               int64_t tablet_id,
+                                                               int64_t replica_id,
+                                                               int64_t partition_id,
+                                                               int32_t schema_hash);
 
 private:
-    SnapshotManager() : _snapshot_base_id(0) {
-        _mem_tracker = std::make_unique<MemTracker>("SnapshotManager");
-    }
-
     Status _calc_snapshot_id_path(const TabletSharedPtr& tablet, int64_t timeout_s,
                                   std::string* out_path);
 
@@ -90,15 +81,10 @@ private:
                              TabletSchemaSPtr tablet_schema, const RowsetId& next_id,
                              RowsetMetaPB* new_rs_meta_pb);
 
-private:
-    static SnapshotManager* _s_instance;
-    static std::mutex _mlock;
+    StorageEngine& _engine;
+    std::atomic<uint64_t> _snapshot_base_id {0};
 
-    // snapshot
-    std::mutex _snapshot_mutex;
-    uint64_t _snapshot_base_id;
-
-    std::unique_ptr<MemTracker> _mem_tracker;
+    std::shared_ptr<MemTracker> _mem_tracker;
 }; // SnapshotManager
 
 } // namespace doris

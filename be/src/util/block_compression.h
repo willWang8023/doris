@@ -17,15 +17,20 @@
 
 #pragma once
 
+#include <gen_cpp/parquet_types.h>
+
 #include <cstddef>
 #include <vector>
 
 #include "common/status.h"
-#include "gen_cpp/parquet_types.h"
-#include "gen_cpp/segment_v2.pb.h"
 #include "util/slice.h"
 
 namespace doris {
+class faststring;
+
+namespace segment_v2 {
+enum CompressionTypePB : int;
+} // namespace segment_v2
 
 // This class is used to encapsulate Compression/Decompression algorithm.
 // This class only used to compress a block data, which means all data
@@ -36,7 +41,7 @@ namespace doris {
 //
 
 // max compression reuse buffer size
-// if max_compress_len is bigger than this, donot use faststring in context
+// if max_compress_len is bigger than this, don't use faststring in context
 const static int MAX_COMPRESSION_BUFFER_SIZE_FOR_REUSE = 1024 * 1024 * 8;
 class BlockCompressionCodec {
 public:

@@ -17,166 +17,179 @@
 
 package org.apache.doris.statistics;
 
-import org.apache.doris.catalog.Type;
-import org.apache.doris.common.AnalysisException;
+import org.apache.doris.nereids.stats.StatsMathUtil;
+import org.apache.doris.nereids.trees.expressions.Expression;
+import org.apache.doris.nereids.trees.expressions.Slot;
 
-import com.google.common.collect.Maps;
-
+import java.text.DecimalFormat;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
 
-/**
- * There are the statistics of all of tables.
- * The @Statistics are mainly used to provide input for the Optimizer's cost model.
- *
- * @idToTableStats: <@Long tableId, @TableStats tableStats>
- * Each table will have corresponding @TableStats.
- * Those @TableStats are recorded in @idToTableStats form of MAP.
- * This facilitates the optimizer to quickly find the corresponding
- * @TableStats based on the table id.
- */
 public class Statistics {
+    private static final int K_BYTES = 1024;
 
-    private final Map<Long, TableStats> idToTableStats = Maps.newConcurrentMap();
+    private final double rowCount;
 
-    public void updateTableStats(long tableId, Map<StatsType, String> statsTypeToValue) throws AnalysisException {
-        TableStats tableStats = getNotNullTableStats(tableId);
-        tableStats.updateTableStats(statsTypeToValue);
+    private final Map<Expression, ColumnStatistic> expressionToColumnStats;
+    private final int widthInJoinCluster;
+
+    // the byte size of one tuple
+    private double tupleSize;
+
+    public Statistics(double rowCount, Map<Expression, ColumnStatistic> expressionToColumnStats) {
+        this(rowCount, 1, expressionToColumnStats);
     }
 
-    public void updatePartitionStats(long tableId, String partitionName, Map<StatsType, String> statsTypeToValue)
-            throws AnalysisException {
-        TableStats tableStats = getNotNullTableStats(tableId);
-        tableStats.updatePartitionStats(partitionName, statsTypeToValue);
+    public Statistics(double rowCount, int widthInJoinCluster,
+                      Map<Expression, ColumnStatistic> expressionToColumnStats) {
+        this.rowCount = rowCount;
+        this.widthInJoinCluster = widthInJoinCluster;
+        this.expressionToColumnStats = expressionToColumnStats;
     }
 
-    public void updateColumnStats(long tableId, String columnName, Type columnType,
-                                  Map<StatsType, String> statsTypeToValue) throws AnalysisException {
-        TableStats tableStats = getNotNullTableStats(tableId);
-        tableStats.updateColumnStats(columnName, columnType, statsTypeToValue);
+    public ColumnStatistic findColumnStatistics(Expression expression) {
+        return expressionToColumnStats.get(expression);
     }
 
-    public void updateColumnStats(long tableId, String partitionName, String columnName, Type columnType,
-                                  Map<StatsType, String> statsTypeToValue) throws AnalysisException {
-        TableStats tableStats = getNotNullTableStats(tableId);
-        Map<String, PartitionStats> nameToPartitionStats = tableStats.getNameToPartitionStats();
-        PartitionStats partitionStats = nameToPartitionStats.get(partitionName);
-        partitionStats.updateColumnStats(columnName, columnType, statsTypeToValue);
+    public Map<Expression, ColumnStatistic> columnStatistics() {
+        return expressionToColumnStats;
     }
 
-    /**
-     * if the table stats is not exist, create a new one.
-     *
-     * @param tableId table id
-     * @return @TableStats
-     */
-    public TableStats getNotNullTableStats(long tableId) {
-        TableStats tableStats = idToTableStats.get(tableId);
-        if (tableStats == null) {
-            tableStats = new TableStats();
-            idToTableStats.put(tableId, tableStats);
-        }
-        return tableStats;
+    public double getRowCount() {
+        return rowCount;
+    }
+
+    public Statistics withRowCount(double rowCount) {
+        return new Statistics(rowCount, widthInJoinCluster, new HashMap<>(expressionToColumnStats));
     }
 
     /**
-     * Get the table stats for the given table id.
-     *
-     * @param tableId table id
-     * @return @TableStats
-     * @throws AnalysisException if table stats not exists
+     * Update by count.
      */
-    public TableStats getTableStats(long tableId) throws AnalysisException {
-        TableStats tableStats = idToTableStats.get(tableId);
-        if (tableStats == null) {
-            throw new AnalysisException("Table " + tableId + " has no statistics");
+    public Statistics withRowCountAndEnforceValid(double rowCount) {
+        Statistics statistics = new Statistics(rowCount, widthInJoinCluster, expressionToColumnStats);
+        statistics.enforceValid();
+        return statistics;
+    }
+
+    public void enforceValid() {
+        for (Entry<Expression, ColumnStatistic> entry : expressionToColumnStats.entrySet()) {
+            ColumnStatistic columnStatistic = entry.getValue();
+            if (!checkColumnStatsValid(columnStatistic)) {
+                double ndv = Math.min(columnStatistic.ndv, rowCount);
+                ColumnStatisticBuilder columnStatisticBuilder = new ColumnStatisticBuilder(columnStatistic);
+                columnStatisticBuilder.setNdv(ndv);
+                columnStatisticBuilder.setNumNulls(Math.min(columnStatistic.numNulls, rowCount - ndv));
+                columnStatisticBuilder.setCount(rowCount);
+                columnStatistic = columnStatisticBuilder.build();
+                expressionToColumnStats.put(entry.getKey(), columnStatistic);
+            }
         }
-        return tableStats;
+    }
+
+    public boolean checkColumnStatsValid(ColumnStatistic columnStatistic) {
+        return columnStatistic.ndv <= rowCount
+                && columnStatistic.numNulls <= rowCount - columnStatistic.ndv;
+    }
+
+    public Statistics withSel(double sel) {
+        sel = StatsMathUtil.minNonNaN(sel, 1);
+        if (Double.isNaN(rowCount)) {
+            return this;
+        }
+        double newCount = rowCount * sel;
+        return new Statistics(newCount, widthInJoinCluster, new HashMap<>(expressionToColumnStats));
+    }
+
+    public Statistics addColumnStats(Expression expression, ColumnStatistic columnStatistic) {
+        expressionToColumnStats.put(expression, columnStatistic);
+        return this;
+    }
+
+    public boolean isInputSlotsUnknown(Set<Slot> inputs) {
+        return inputs.stream()
+                .allMatch(s -> expressionToColumnStats.containsKey(s)
+                        && expressionToColumnStats.get(s).isUnKnown);
+    }
+
+    private double computeTupleSize() {
+        if (tupleSize <= 0) {
+            double tempSize = 0.0;
+            for (ColumnStatistic s : expressionToColumnStats.values()) {
+                tempSize += s.avgSizeByte;
+            }
+            tupleSize = Math.max(1, tempSize);
+        }
+        return tupleSize;
+    }
+
+    public double computeSize() {
+        return computeTupleSize() * rowCount;
+    }
+
+    public double dataSizeFactor() {
+        double lowerBound = 0.03;
+        double upperBound = 0.07;
+        return Math.min(Math.max(computeTupleSize() / K_BYTES, lowerBound), upperBound);
+    }
+
+    @Override
+    public String toString() {
+        if (Double.isNaN(rowCount)) {
+            return "NaN";
+        }
+        if (Double.POSITIVE_INFINITY == rowCount) {
+            return "Infinite";
+        }
+        if (Double.NEGATIVE_INFINITY == rowCount) {
+            return "-Infinite";
+        }
+        DecimalFormat format = new DecimalFormat("#,###.##");
+        return format.format(rowCount);
+    }
+
+    public int getBENumber() {
+        return 1;
+    }
+
+    public static Statistics zero(Statistics statistics) {
+        Statistics zero = new Statistics(0, new HashMap<>());
+        for (Map.Entry<Expression, ColumnStatistic> entry : statistics.expressionToColumnStats.entrySet()) {
+            zero.addColumnStats(entry.getKey(), ColumnStatistic.ZERO);
+        }
+        return zero;
     }
 
     /**
-     * Get the partitions stats for the given table id.
-     *
-     * @param tableId table id
-     * @return partition name and @PartitionStats
-     * @throws AnalysisException if partitions stats not exists
+     * merge this and other colStats.ndv, choose min
      */
-    public Map<String, PartitionStats> getPartitionStats(long tableId) throws AnalysisException {
-        TableStats tableStats = getTableStats(tableId);
-        Map<String, PartitionStats> nameToPartitionStats = tableStats.getNameToPartitionStats();
-        if (nameToPartitionStats == null) {
-            throw new AnalysisException("Table " + tableId + " has no partition statistics");
-        }
-        return nameToPartitionStats;
-    }
-
-    /**
-     * Get the partition stats for the given table id and partition name.
-     *
-     * @param tableId table id
-     * @param partitionName partition name
-     * @return partition name and @PartitionStats
-     * @throws AnalysisException if partition stats not exists
-     */
-    public Map<String, PartitionStats> getPartitionStats(long tableId, String partitionName)
-            throws AnalysisException {
-        Map<String, PartitionStats> partitionStats = getPartitionStats(tableId);
-        PartitionStats partitionStat = partitionStats.get(partitionName);
-        if (partitionStat == null) {
-            throw new AnalysisException("Partition " + partitionName + " of table " + tableId + " has no statistics");
-        }
-        Map<String, PartitionStats> statsMap = Maps.newHashMap();
-        statsMap.put(partitionName, partitionStat);
-        return statsMap;
-    }
-
-    /**
-     * Get the columns stats for the given table id.
-     *
-     * @param tableId table id
-     * @return column name and @ColumnStats
-     * @throws AnalysisException if columns stats not exists
-     */
-    public Map<String, ColumnStats> getColumnStats(long tableId) throws AnalysisException {
-        TableStats tableStats = getTableStats(tableId);
-        Map<String, ColumnStats> nameToColumnStats = tableStats.getNameToColumnStats();
-        if (nameToColumnStats == null) {
-            throw new AnalysisException("Table " + tableId + " has no column statistics");
-        }
-        return nameToColumnStats;
-    }
-
-    /**
-     * Get the columns stats for the given table id and partition name.
-     *
-     * @param tableId table id
-     * @param partitionName partition name
-     * @return column name and @ColumnStats
-     * @throws AnalysisException if column stats not exists
-     */
-    public Map<String, ColumnStats> getColumnStats(long tableId, String partitionName) throws AnalysisException {
-        Map<String, PartitionStats> partitionStats = getPartitionStats(tableId, partitionName);
-        PartitionStats partitionStat = partitionStats.get(partitionName);
-        if (partitionStat == null) {
-            throw new AnalysisException("Partition " + partitionName + " of table " + tableId + " has no statistics");
-        }
-        return partitionStat.getNameToColumnStats();
-    }
-
-    // TODO: mock statistics need to be removed in the future
-    public void mockTableStatsWithRowCount(long tableId, long rowCount) {
-        TableStats tableStats = idToTableStats.get(tableId);
-        if (tableStats == null) {
-            tableStats = new TableStats();
-            idToTableStats.put(tableId, tableStats);
-        }
-
-        if (tableStats.getRowCount() != rowCount) {
-            tableStats.setRowCount(rowCount);
+    public void updateNdv(Statistics other) {
+        for (Expression expr : expressionToColumnStats.keySet()) {
+            ColumnStatistic otherColStats = other.findColumnStatistics(expr);
+            if (otherColStats != null) {
+                ColumnStatistic thisColStats = expressionToColumnStats.get(expr);
+                if (thisColStats.ndv > otherColStats.ndv) {
+                    expressionToColumnStats.put(expr,
+                            new ColumnStatisticBuilder(thisColStats).setNdv(otherColStats.ndv).build());
+                }
+            }
         }
     }
 
-    // Used for unit test
-    public void putTableStats(long id, TableStats tableStats) {
-        this.idToTableStats.put(id, tableStats);
+    public String detail(String prefix) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(prefix).append("rows=").append(rowCount).append("\n");
+        builder.append(prefix).append("tupleSize=").append(computeTupleSize()).append("\n");
+        builder.append(prefix).append("width=").append(widthInJoinCluster).append("\n");
+        for (Entry<Expression, ColumnStatistic> entry : expressionToColumnStats.entrySet()) {
+            builder.append(prefix).append(entry.getKey()).append(" -> ").append(entry.getValue()).append("\n");
+        }
+        return builder.toString();
+    }
+
+    public int getWidthInJoinCluster() {
+        return widthInJoinCluster;
     }
 }

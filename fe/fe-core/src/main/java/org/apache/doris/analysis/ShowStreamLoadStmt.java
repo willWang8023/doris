@@ -20,7 +20,6 @@ package org.apache.doris.analysis;
 import org.apache.doris.analysis.BinaryPredicate.Operator;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.ScalarType;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
@@ -62,10 +61,10 @@ public class ShowStreamLoadStmt extends ShowStmt {
     private ArrayList<OrderByPair> orderByPairs;
 
     private static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
-            .add("Label").add("Db").add("Table").add("User")
+            .add("Label").add("Db").add("Table")
             .add("ClientIp").add("Status").add("Message").add("Url").add("TotalRows")
             .add("LoadedRows").add("FilteredRows").add("UnselectedRows").add("LoadBytes")
-            .add("StartTime").add("FinishTime")
+            .add("StartTime").add("FinishTime").add("User").add("Comment")
             .build();
 
     public ShowStreamLoadStmt(String db, Expr labelExpr,
@@ -145,8 +144,6 @@ public class ShowStreamLoadStmt extends ShowStmt {
             if (Strings.isNullOrEmpty(dbName)) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
             }
-        } else {
-            dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
         }
 
         // analyze where clause if not null

@@ -71,6 +71,7 @@ SET GLOBAL exec_mem_limit = 137438953472
 - `sql_mode`
 - `enable_profile`
 - `query_timeout`
+- <version since="dev" type="inline">`insert_timeout`</version>
 - `exec_mem_limit`
 - `batch_size`
 - `allow_partition_column_nullable`
@@ -80,6 +81,9 @@ SET GLOBAL exec_mem_limit = 137438953472
 只支持全局生效的变量包括：
 
 - `default_rowset_type`
+- `default_password_lifetime`
+- `password_history`
+- `validate_password_policy`
 
 同时，变量设置也支持常量表达式。如：
 
@@ -107,7 +111,7 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
 - `auto_increment_increment`
 
-  用于兼容 MySQL 客户端。无实际作用。
+  用于兼容 MySQL 客户端。无实际作用。虽然 Doris 已经有了 [AUTO_INCREMENT](../sql-manual/sql-reference/Data-Definition-Statements/Create/CREATE-TABLE#column_definition_list) 功能，但这个参数并不会对 AUTO_INCREMENT 的行为产生影响。auto_increment_offset 也是如此。
 
 - `autocommit`
 
@@ -171,6 +175,14 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
   用于兼容 MySQL 客户端。无实际作用。
 
+- `have_query_cache`
+
+  用于兼容 MySQL 客户端。无实际作用。
+
+- `default_order_by_limit`
+
+  用于控制 OrderBy 以后返回的默认条数。默认值为 -1，默认返回查询后的最大条数，上限为 long 数据类型的 MAX_VALUE 值。
+
 - `delete_without_partition`
 
   设置为 true 时。当使用 delete 命令删除分区表数据时，可以不指定分区。delete 操作将会自动应用到所有分区。
@@ -179,11 +191,11 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
 - `disable_colocate_join`
 
-  控制是否启用 [Colocation Join](./join-optimization/colocation-join.md) 功能。默认为 false，表示启用该功能。true 表示禁用该功能。当该功能被禁用后，查询规划将不会尝试执行 Colocation Join。
+  控制是否启用 [Colocation Join](../query-acceleration/join-optimization/colocation-join.md) 功能。默认为 false，表示启用该功能。true 表示禁用该功能。当该功能被禁用后，查询规划将不会尝试执行 Colocation Join。
 
 - `enable_bucket_shuffle_join`
 
-  控制是否启用 [Bucket Shuffle Join](./join-optimization/bucket-shuffle-join.md) 功能。默认为 true，表示启用该功能。false 表示禁用该功能。当该功能被禁用后，查询规划将不会尝试执行 Bucket Shuffle Join。
+  控制是否启用 [Bucket Shuffle Join](../query-acceleration/join-optimization/bucket-shuffle-join.md) 功能。默认为 true，表示启用该功能。false 表示禁用该功能。当该功能被禁用后，查询规划将不会尝试执行 Bucket Shuffle Join。
 
 - `disable_streaming_preaggregations`
 
@@ -211,6 +223,8 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
   当出现 `Memory Exceed Limit` 错误时，可以尝试指数级增加该参数，如 4G、8G、16G 等。
 
+  需要注意的是，这个值可能有几 MB 的浮动。
+
 - `forward_to_master`
 
   用户设置是否将一些show 类命令转发到 Master FE 节点执行。默认为 `true`，即转发。Doris 中存在多个 FE 节点，其中一个为 Master 节点。通常用户可以连接任意 FE 节点进行全功能操作。但部分信息查看指令，只有从 Master FE 节点才能获取详细信息。
@@ -231,7 +245,7 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
      转发到 Master 可以查看启动时间、最后一次心跳信息。
 
-  4. `SHOW TABLET;`/`ADMIN SHOW REPLICA DISTRIBUTION;`/`ADMIN SHOW REPLICA STATUS;`
+  4. `SHOW TABLET;`/`SHOW REPLICA DISTRIBUTION;`/`SHOW REPLICA STATUS;`
 
      转发到 Master 可以查看 Master FE 元数据中存储的 tablet 信息。正常情况下，不同 FE 元数据中 tablet 信息应该是一致的。当出现问题时，可以通过这个方法比较当前 FE 和 Master FE 元数据的差异。
 
@@ -264,14 +278,6 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 - `license`
 
   显示 Doris 的 License。无其他作用。
-
-- `load_mem_limit`
-
-  用于指定所有导入的内存限制。默认是2GB。
-
-  对于 Broker Load， Stream Load 和 Routine Load，默认使用`load_mem_limit`; 如果用户创建任务时指定任务`exec_mem_limit`参数，则使用指定的值。
-
-  这个变量也用于 INSERT 操作。 INSERT 操作设计查询和导入两个部分， INSERT 的查询部分内存限制为 `exec_mem_limit`，而导入部分限制为 `load_mem_limit`。
 
 - `lower_case_table_names`
 
@@ -356,7 +362,10 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
 - `query_timeout`
 
-  用于设置查询超时。该变量会作用于当前连接中所有的查询语句，以及 INSERT 语句。默认为 5 分钟，单位为秒。
+  用于设置查询超时。该变量会作用于当前连接中所有的查询语句，对于 INSERT 语句推荐使用insert_timeout。默认为 15 分钟，单位为秒。
+
+- `insert_timeout`
+  <version since="dev"></version>用于设置针对 INSERT 语句的超时。该变量仅作用于 INSERT 语句，建议在 INSERT 行为易持续较长时间的场景下设置。默认为 4 小时，单位为秒。由于旧版本用户会通过延长 query_timeout 来防止 INSERT 语句超时，insert_timeout 在 query_timeout 大于自身的情况下将会失效, 以兼容旧版本用户的习惯。
 
 - `resource_group`
 
@@ -376,15 +385,15 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
 - `sql_select_limit`
 
-  用于兼容 MySQL 客户端。无实际作用。
+  用于设置 select 语句的默认返回行数，包括 insert 语句的 select 从句。默认不限制。
 
 - `system_time_zone`
 
-  显示当前系统时区。不可更改。
+  集群初始化时设置为当前系统时区。不可更改。
 
 - `time_zone`
 
-  用于设置当前会话的时区。时区会对某些时间函数的结果产生影响。关于时区，可以参阅 [这里](./time-zone.md)。
+  用于设置当前会话的时区。默认值为 `system_time_zone` 的值。时区会对某些时间函数的结果产生影响。关于时区，可以参阅 [时区](./time-zone)文档。
 
 - `tx_isolation`
 
@@ -472,7 +481,33 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
   用于关闭所有系统自动的 join reorder 算法。取值有两种：true 和 false。默认行况下关闭，也就是采用系统自动的 join reorder 算法。设置为 true 后，系统会关闭所有自动排序的算法，采用 SQL 原始的表顺序，执行 join
 
-- `return_object_data_as_binary` 用于标识是否在select 结果中返回bitmap/hll 结果。在 select into outfile 语句中，如果导出文件格式为csv 则会将 bimap/hll 数据进行base64编码，如果是parquet 文件格式 将会把数据作为byte array 存储
+- `return_object_data_as_binary` 用于标识是否在select 结果中返回bitmap/hll 结果。在 select into outfile 语句中，如果导出文件格式为csv 则会将 bimap/hll 数据进行base64编码，如果是parquet 文件格式 将会把数据作为byte array 存储。下面将展示 Java 的例子，更多的示例可查看[samples](https://github.com/apache/doris/tree/master/samples/read_bitmap).
+
+```java
+try (Connection conn = DriverManager.getConnection("jdbc:mysql://127.0.0.1:9030/test?user=root");
+             Statement stmt = conn.createStatement()
+) {
+    stmt.execute("set return_object_data_as_binary=true"); // IMPORTANT!!!
+    ResultSet rs = stmt.executeQuery("select uids from t_bitmap");
+    while(rs.next()){
+        byte[] bytes = rs.getBytes(1);
+        RoaringBitmap bitmap32 = new RoaringBitmap();
+        switch(bytes[0]) {
+            case 0: // for empty bitmap
+                break;
+            case 1: // for only 1 element in bitmap32
+                bitmap32.add(ByteBuffer.wrap(bytes,1,bytes.length-1)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .getInt());
+                break;
+            case 2: // for more than 1 elements in bitmap32
+                bitmap32.deserialize(ByteBuffer.wrap(bytes,1,bytes.length-1));
+                break;
+            // for more details, see https://github.com/apache/doris/tree/master/samples/read_bitmap
+        }
+    }
+}
+```
 
 - `block_encryption_mode` 可以通过block_encryption_mode参数，控制块加密模式，默认值为：空。当使用AES算法加密时相当于`AES_128_ECB`, 当时用SM3算法加密时相当于`SM3_128_ECB` 可选值：
 
@@ -510,14 +545,182 @@ SELECT /*+ SET_VAR(query_timeout = 1, enable_partition_cache=true) */ sleep(3);
 
 - `enable_infer_predicate`
 
-  用于控制是否进行谓词推导。取值有两种：true 和 false。默认情况下关闭，系统不在进行谓词推导，采用原始的谓词进行相关操作。设置为 true 后，进行谓词扩展。
+    用于控制是否进行谓词推导。取值有两种：true 和 false。默认情况下关闭，系统不在进行谓词推导，采用原始的谓词进行相关操作。设置为 true 后，进行谓词扩展。
 
 - `trim_tailing_spaces_for_external_table_query`
 
-  用于控制查询Hive外表时是否过滤掉字段末尾的空格。默认为false。
+    用于控制查询Hive外表时是否过滤掉字段末尾的空格。默认为false。
 
 * `skip_storage_engine_merge`
-  用于调试目的。在向量化执行引擎中，当发现读取Aggregate Key模型或者Unique Key模型的数据结果有问题的时候，把此变量的值设置为`true`，将会把Aggregate Key模型或者Unique Key模型的数据当成Duplicate Key模型读取。
+
+    用于调试目的。在向量化执行引擎中，当发现读取Aggregate Key模型或者Unique Key模型的数据结果有问题的时候，把此变量的值设置为`true`，将会把Aggregate Key模型或者Unique Key模型的数据当成Duplicate Key模型读取。
 
 * `skip_delete_predicate`
-  用于调试目的。在向量化执行引擎中，当发现读取表的数据结果有误的时候，把此变量的值设置为`true`，将会把被删除的数据当成正常数据读取。
+
+	用于调试目的。在向量化执行引擎中，当发现读取表的数据结果有误的时候，把此变量的值设置为`true`，将会把被删除的数据当成正常数据读取。
+
+* `skip_delete_bitmap`
+
+    用于调试目的。在Unique Key MoW表中，当发现读取表的数据结果有误的时候，把此变量的值设置为`true`，将会把被delete bitmap标记删除的数据当成正常数据读取。
+
+* `skip_missing_version`
+
+    有些极端场景下，表的 Tablet 下的所有的所有副本都有版本缺失，使得这些 Tablet 没有办法被恢复，导致整张表都不能查询。这个变量可以用来控制查询的行为，当设置为`true`时，查询会忽略 FE partition 中记录的 visibleVersion，使用 replica version。如果 Be 上的 Replica 有缺失的版本，则查询会直接跳过这些缺失的版本，只返回仍存在版本的数据。此外，查询将会总是选择所有存活的 BE 中所有 Replica 里 lastSuccessVersion 最大的那一个，这样可以尽可能的恢复更多的数据。这个变量应该只在上述紧急情况下才被设置为`true`，仅用于临时让表恢复查询。注意，此变量与 use_fix_replica 变量冲突，当 use_fix_replica 变量不等于 -1 时，此变量会不起作用
+
+* `skip_bad_tablet`
+
+    在某些情况下，用户某张单副本表中有大量数据，如果其中某个Tablet损坏，将导致整张表无法查询。如果用户不关心数据的完整性，他们可以使用此变量暂时跳过坏的Tablet进行查询，并将剩余数据导入到新表中。
+
+* `default_password_lifetime`
+
+ 	默认的密码过期时间。默认值为 0，即表示不过期。单位为天。该参数只有当用户的密码过期属性为 DEFAULT 值时，才启用。如：
+ 	
+ 	```
+ 	CREATE USER user1 IDENTIFIED BY "12345" PASSWORD_EXPIRE DEFAULT;
+ 	ALTER USER user1 PASSWORD_EXPIRE DEFAULT;
+	```
+* `password_history`
+
+	默认的历史密码次数。默认值为0，即不做限制。该参数只有当用户的历史密码次数属性为 DEFAULT 值时，才启用。如：
+
+	```
+ 	CREATE USER user1 IDENTIFIED BY "12345" PASSWORD_HISTORY DEFAULT;
+ 	ALTER USER user1 PASSWORD_HISTORY DEFAULT;
+	```
+
+* `validate_password_policy`
+
+	密码强度校验策略。默认为 `NONE` 或 `0`，即不做校验。可以设置为 `STRONG` 或 `2`。当设置为 `STRONG` 或 `2` 时，通过 `ALTER USER` 或 `SET PASSWORD` 命令设置密码时，密码必须包含“大写字母”，“小写字母”，“数字”和“特殊字符”中的3项，并且长度必须大于等于8。特殊字符包括：`~!@#$%^&*()_+|<>,.?/:;'[]{}"`。
+
+* `group_concat_max_len`
+
+    为了兼容某些BI工具能正确获取和设置该变量，变量值实际并没有作用。
+
+* `rewrite_or_to_in_predicate_threshold`
+
+    默认的改写OR to IN的OR数量阈值。默认值为2，即表示有2个OR的时候，如果可以合并，则会改写成IN。
+
+*   `group_by_and_having_use_alias_first`
+
+    指定group by和having语句是否优先使用列的别名，而非从From语句里寻找列的名字。默认为false。
+
+* `enable_file_cache`
+
+    控制是否启用block file cache，默认 false。该变量只有在be.conf中enable_file_cache=true时才有效，如果be.conf中enable_file_cache=false，该BE节点的block file cache处于禁用状态。
+
+* `file_cache_base_path`
+
+    指定block file cache在BE上的存储路径，默认 'random'，随机选择BE配置的存储路径。
+
+* `enable_inverted_index_query`
+
+    控制是否启用inverted index query，默认 true.
+
+	
+* `topn_opt_limit_threshold`
+
+    设置topn优化的limit阈值 (例如：SELECT * FROM t ORDER BY k LIMIT n). 如果limit的n小于等于阈值，topn相关优化（动态过滤下推、两阶段获取结果、按key的顺序读数据）会自动启用，否则会禁用。默认值是1024。
+
+* `drop_table_if_ctas_failed`
+
+    控制create table as select在写入发生错误时是否删除已创建的表，默认为true。
+
+* `show_user_default_role`
+
+    <version since="dev"></version>
+
+    控制是否在 `show roles` 的结果里显示每个用户隐式对应的角色。默认为 false。
+
+* `use_fix_replica`
+
+    <version since="1.2.0"></version>
+
+    使用固定replica进行查询。replica从0开始，如果use_fix_replica为0，则使用最小的，如果use_fix_replica为1，则使用第二个最小的，依此类推。默认值为-1，表示未启用。
+
+* `dry_run_query`
+
+    <version since="dev"></version>
+
+    如果设置为true，对于查询请求，将不再返回实际结果集，而仅返回行数。对于导入和insert，Sink 丢掉了数据，不会有实际的写发生。额默认为 false。
+
+    该参数可以用于测试返回大量数据集时，规避结果集传输的耗时，重点关注底层查询执行的耗时。
+
+    ```
+    mysql> select * from bigtable;
+    +--------------+
+    | ReturnedRows |
+    +--------------+
+    | 10000000     |
+    +--------------+
+    ```
+  
+* `enable_parquet_lazy_materialization`
+
+  控制 parquet reader 是否启用延迟物化技术。默认为 true。
+
+* `enable_orc_lazy_materialization`
+
+  控制 orc reader 是否启用延迟物化技术。默认为 true。
+
+* `enable_strong_consistency_read`
+
+  用以开启强一致读。Doris 默认支持同一个会话内的强一致性，即同一个会话内对数据的变更操作是实时可见的。如需要会话间的强一致读，则需将此变量设置为true。
+
+* `truncate_char_or_varchar_columns`
+
+  是否按照表的 schema 来截断 char 或者 varchar 列。默认为 false。
+
+  因为外表会存在表的 schema 中 char 或者 varchar 列的最大长度和底层 parquet 或者 orc 文件中的 schema 不一致的情况。此时开启改选项，会按照表的 schema 中的最大长度进行截断。
+
+* `jdbc_clickhouse_query_final`
+
+  是否在使用 JDBC Catalog 功能查询 ClickHouse 时增加 final 关键字，默认为 false
+
+  用于 ClickHouse 的 ReplacingMergeTree 表引擎查询去重
+
+* `enable_memtable_on_sink_node`
+
+  <version since="2.1.0">
+  是否在数据导入中启用 MemTable 前移，默认为 true
+  </version>
+
+  在 DataSink 节点上构建 MemTable，并通过 brpc streaming 发送 segment 到其他 BE。
+  该方法减少了多副本之间的重复工作，并且节省了数据序列化和反序列化的时间。
+
+* `enable_unique_key_partial_update`
+
+  <version since="2.0.2">
+  是否在对insert into语句启用部分列更新的语义，默认为 false。需要注意的是，控制insert语句是否开启严格模式的会话变量`enable_insert_strict`的默认值为true，即insert语句默认开启严格模式，而在严格模式下进行部分列更新不允许更新不存在的key。所以，在使用insert语句进行部分列更新的时候如果希望能插入不存在的key，需要在`enable_unique_key_partial_update`设置为true的基础上同时将`enable_insert_strict`设置为false。
+  </version>
+
+* `describe_extend_variant_column`
+
+  是否展示 variant 的拆解列。默认为 false。
+
+***
+
+#### 关于语句执行超时控制的补充说明
+
+* 控制手段
+
+    目前doris支持通过`variable`和`user property`两种体系来进行超时控制。其中均包含`qeury_timeout`和`insert_timeout`。
+
+* 优先次序
+
+    超时生效的优先级次序是：`session variable` > `user property` > `global variable` > `default value`
+
+    较高优先级的变量未设置时，会自动采用下一个优先级的数值。
+
+* 相关语义
+
+    `query_timeout`用于控制所有语句的超时，`insert_timeout`特定用于控制 INSERT 语句的超时，在执行 INSERT 语句时，超时时间会取
+    
+    `query_timeout`和`insert_timeout`中的最大值。
+
+    `user property`中的`query_timeout`和`insert_timeout`只能由 ADMIN 用户对目标用户予以指定，其语义在于改变被指定用户的默认超时时间，
+    
+    并且不具备`quota`语义。
+
+* 注意事项
+
+    `user property`设置的超时时间需要客户端重连后触发。

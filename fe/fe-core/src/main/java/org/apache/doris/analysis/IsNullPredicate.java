@@ -31,11 +31,8 @@ import org.apache.doris.thrift.TExprNodeType;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 
 public class IsNullPredicate extends Predicate {
-    private static final Logger LOG = LogManager.getLogger(IsNullPredicate.class);
     private static final String IS_NULL = "is_null_pred";
     private static final String IS_NOT_NULL = "is_not_null_pred";
 
@@ -44,41 +41,42 @@ public class IsNullPredicate extends Predicate {
             if (t.isNull()) {
                 continue;
             }
-            String isNullSymbol;
-            if (t == Type.BOOLEAN) {
-                isNullSymbol = "_ZN5doris15IsNullPredicate7is_nullIN9doris_udf10BooleanValE"
-                        + "EES3_PNS2_15FunctionContextERKT_";
-            } else {
-                String udfType = Function.getUdfType(t.getPrimitiveType());
-                isNullSymbol = "_ZN5doris15IsNullPredicate7is_nullIN9doris_udf"
-                        + udfType.length() + udfType
-                        + "EEENS2_10BooleanValEPNS2_15FunctionContextERKT_";
-            }
 
-            functionSet.addBuiltinBothScalaAndVectorized(ScalarFunction.createBuiltinOperator(IS_NULL, isNullSymbol,
+            functionSet.addBuiltinBothScalaAndVectorized(ScalarFunction.createBuiltinOperator(IS_NULL, null,
                     Lists.newArrayList(t), Type.BOOLEAN, NullableMode.ALWAYS_NOT_NULLABLE));
 
-            String isNotNullSymbol = isNullSymbol.replace("7is_null", "11is_not_null");
             functionSet.addBuiltinBothScalaAndVectorized(ScalarFunction.createBuiltinOperator(IS_NOT_NULL,
-                    isNotNullSymbol, Lists.newArrayList(t), Type.BOOLEAN, NullableMode.ALWAYS_NOT_NULLABLE));
+                    null, Lists.newArrayList(t), Type.BOOLEAN, NullableMode.ALWAYS_NOT_NULLABLE));
+        }
+        // for array type
+        for (Type complexType : Lists.newArrayList(Type.ARRAY, Type.MAP, Type.GENERIC_STRUCT)) {
+            functionSet.addBuiltinBothScalaAndVectorized(ScalarFunction.createBuiltinOperator(IS_NULL, null,
+                    Lists.newArrayList(complexType), Type.BOOLEAN, NullableMode.ALWAYS_NOT_NULLABLE));
 
-            // for array type
-            functionSet.addBuiltinBothScalaAndVectorized(ScalarFunction.createBuiltinOperator(IS_NULL, isNullSymbol,
-                    Lists.newArrayList(Type.ARRAY), Type.BOOLEAN, NullableMode.ALWAYS_NOT_NULLABLE));
-
-            functionSet.addBuiltinBothScalaAndVectorized(ScalarFunction.createBuiltinOperator(IS_NOT_NULL,
-                    isNotNullSymbol, Lists.newArrayList(Type.ARRAY), Type.BOOLEAN, NullableMode.ALWAYS_NOT_NULLABLE));
+            functionSet.addBuiltinBothScalaAndVectorized(ScalarFunction.createBuiltinOperator(IS_NOT_NULL, null,
+                    Lists.newArrayList(complexType), Type.BOOLEAN, NullableMode.ALWAYS_NOT_NULLABLE));
         }
     }
-
 
     private final boolean isNotNull;
 
     public IsNullPredicate(Expr e, boolean isNotNull) {
+        this(e, isNotNull, false);
+    }
+
+    /**
+     * use for Nereids ONLY
+     */
+    public IsNullPredicate(Expr e, boolean isNotNull, boolean isNereids) {
         super();
         this.isNotNull = isNotNull;
         Preconditions.checkNotNull(e);
         children.add(e);
+        if (isNereids) {
+            fn = new Function(new FunctionName(isNotNull ? IS_NOT_NULL : IS_NULL),
+                    Lists.newArrayList(e.getType()), Type.BOOLEAN, false, true, NullableMode.ALWAYS_NOT_NULLABLE);
+            Preconditions.checkState(fn != null, "tupleisNull fn == NULL");
+        }
     }
 
     protected IsNullPredicate(IsNullPredicate other) {
@@ -154,23 +152,14 @@ public class IsNullPredicate extends Predicate {
      * fix issue 6390
      */
     @Override
-    public Expr getResultValue() throws AnalysisException {
-        recursiveResetChildrenResult();
+    public Expr getResultValue(boolean forPushDownPredicatesToView) throws AnalysisException {
+        // Don't push down predicate to view for is null predicate because the value can contain null
+        // after outer join
+        recursiveResetChildrenResult(!forPushDownPredicatesToView);
         final Expr childValue = getChild(0);
-        if (!(childValue instanceof LiteralExpr)) {
+        if (forPushDownPredicatesToView || !(childValue instanceof LiteralExpr)) {
             return this;
         }
         return childValue instanceof NullLiteral ? new BoolLiteral(!isNotNull) : new BoolLiteral(isNotNull);
-    }
-
-    @Override
-    public void finalizeImplForNereids() throws AnalysisException {
-        super.finalizeImplForNereids();
-        if (isNotNull) {
-            fn = getBuiltinFunction(IS_NOT_NULL, collectChildReturnTypes(), Function.CompareMode.IS_INDISTINGUISHABLE);
-        } else {
-            fn = getBuiltinFunction(IS_NULL, collectChildReturnTypes(), Function.CompareMode.IS_INDISTINGUISHABLE);
-        }
-        Preconditions.checkState(fn != null, "tupleisNull fn == NULL");
     }
 }

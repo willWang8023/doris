@@ -142,39 +142,125 @@ CREATE ROUTINE LOAD example_db.test1 ON example_tbl
 >
 >"strict_mode" = "true"
 
-3. Example of importing data in Json format
+[3. Example of importing data in Json format](#Example_of_importing_data_in_Json_format)
 
-   Routine Load only supports the following two types of json formats
+  The json format imported by Routine Load only supports the following two types:
 
-   The first one has only one record and is a json object.
+- Only one record and it is a json object:
 
-```json
-{"category":"a9jadhx","author":"test","price":895}
+When using **single table import** (that is, specifying the table name through ON TABLE_NAME), the json data format is as follows.
+  ```
+  {"category":"a9jadhx","author":"test","price":895}
+  ```
+When using **dynamic/multi-table import**  (i.e. not specifying a specific table name), the JSON data format is as follows.
+
+  ```
+  table_name|{"category":"a9jadhx","author":"test","price":895}
+  ```
+
+
+Assuming we need to import data into two tables, `user_address` and `user_info`, the message format is as follows.
+
+eg: user_address data format
+
+```
+    user_address|{"user_id":128787321878,"address":"朝阳区朝阳大厦XXX号","timestamp":1589191587}
+```
+eg: user_info data format
+```
+    user_info|{"user_id":128787321878,"name":"张三","age":18,"timestamp":1589191587}
 ```
 
-The second one is a json array, which can contain multiple records
+- The second type is a JSON array that can contain multiple records.
 
-```json
-[
-    {   
-        "category":"11",
-        "author":"4avc",
-        "price":895,
-        "timestamp":1589191587
-    },
-    {
-        "category":"22",
-        "author":"2avc",
-        "price":895,
-        "timestamp":1589191487
-    },
-    {
-        "category":"33",
-        "author":"3avc",
-        "price":342,
-        "timestamp":1589191387
-    }
-]
+When using **single table import** (that is, specifying the table name through ON TABLE_NAME), the json data format is as follows.
+
+   ```json
+   [
+       {   
+           "category":"11",
+           "author":"4avc",
+           "price":895,
+           "timestamp":1589191587
+       },
+       {
+           "category":"22",
+           "author":"2avc",
+           "price":895,
+           "timestamp":1589191487
+       },
+       {
+           "category":"33",
+           "author":"3avc",
+           "price":342,
+           "timestamp":1589191387
+       }
+   ]
+   ```
+When using **dynamic/multi-table import**  (i.e. not specifying a specific table name), the JSON data format is as follows.
+
+```
+   table_name|[
+       {
+           "user_id":128787321878,
+           "address":"Los Angeles, CA, USA",
+           "timestamp":1589191587
+       },
+       {
+           "user_id":128787321878,
+           "address":"Los Angeles, CA, USA",
+           "timestamp":1589191587
+       },
+       {
+           "user_id":128787321878,
+           "address":"Los Angeles, CA, USA",
+           "timestamp":1589191587
+       }
+   ]
+```
+Similarly, taking the tables `user_address` and `user_info` as examples, the message format would be as follows.
+
+eg: user_address data format
+```
+     user_address|[
+       {   
+           "category":"11",
+           "author":"4avc",
+           "price":895,
+           "timestamp":1589191587
+       },
+       {
+           "category":"22",
+           "author":"2avc",
+           "price":895,
+           "timestamp":1589191487
+       },
+       {
+           "category":"33",
+           "author":"3avc",
+           "price":342,
+           "timestamp":1589191387
+       }
+     ]
+```
+eg: user_info data format
+```
+        user_info|[
+         {
+             "user_id":128787321878,
+             "address":"Los Angeles, CA, USA",
+             "timestamp":1589191587
+         },
+         {
+             "user_id":128787321878,
+             "address":"Los Angeles, CA, USA",
+             "timestamp":1589191587
+         },
+         {
+             "user_id":128787321878,
+             "address":"Los Angeles, CA, USA",
+             "timestamp":1589191587
+         }
 ```
 
 Create the Doris data table to be imported
@@ -324,6 +410,99 @@ FROM KAFKA
 >
 >
 
+**Access Alibaba Cloud Message Queue Kafka Cluster((Access Point Type is SSL))**
+
+```sql
+#Upload certificate file address, address：https://github.com/AliwareMQ/aliware-kafka-demos/blob/master/kafka-cpp-demo/vpc-ssl/only-4096-ca-cert
+CREATE FILE "ca.pem" PROPERTIES("url" = "http://xxx/only-4096-ca-cert", "catalog" = "kafka");
+
+# create routine load job
+CREATE ROUTINE LOAD test.test_job on test_tbl
+PROPERTIES
+(
+    "desired_concurrent_number"="1",
+    "format" = "json"
+)
+FROM KAFKA
+(
+    "kafka_broker_list"= "xxx.alikafka.aliyuncs.com:9093",
+    "kafka_topic" = "test",
+    "property.group.id" = "test_group",
+    "property.client.id" = "test_group",
+    "property.security.protocol"="ssl",
+    "property.ssl.ca.location"="FILE:ca.pem",
+    "property.security.protocol"="sasl_ssl",
+    "property.sasl.mechanism"="PLAIN",
+    "property.sasl.username"="xxx",
+    "property.sasl.password"="xxx"
+);
+```
+
+
+
+**Access the PLAIN certified Kafka cluster**
+
+To access a Kafka cluster with PLAIN authentication enabled, you need to add the following configuration：
+
+   - property.security.protocol=SASL_PLAINTEXT : Use SASL plaintext
+   - property.sasl.mechanism=PLAIN : Set the SASL authentication mode to PLAIN
+   - property.sasl.username=admin : Set the SASL user name
+   - property.sasl.password=admin : Set the SASL password
+
+1. Create a routine import job
+
+    ```sql
+    CREATE ROUTINE LOAD db1.job1 on tbl1
+    PROPERTIES (
+    "desired_concurrent_number"="1",
+     )
+    FROM KAFKA
+    (
+        "kafka_broker_list" = "broker1:9092,broker2:9092",
+        "kafka_topic" = "my_topic",
+        "property.security.protocol"="SASL_PLAINTEXT",
+        "property.sasl.mechanism"="PLAIN",
+        "property.sasl.username"="admin",
+        "property.sasl.password"="admin"
+    );
+    
+    ```
+
+<version since="1.2">
+
+**Accessing a Kerberos-certified Kafka cluster**
+
+Accessing a Kerberos-certified Kafka cluster. The following configurations need to be added:
+
+   - security.protocol=SASL_PLAINTEXT : Use SASL plaintext
+   - sasl.kerberos.service.name=$SERVICENAME : Broker service name
+   - sasl.kerberos.keytab=/etc/security/keytabs/${CLIENT_NAME}.keytab : Client keytab location
+   - sasl.kerberos.principal=${CLIENT_NAME}/${CLIENT_HOST} : sasl.kerberos.principal
+
+1. Create routine import jobs
+
+   ```sql
+   CREATE ROUTINE LOAD db1.job1 on tbl1
+   PROPERTIES (
+   "desired_concurrent_number"="1",
+    )
+   FROM KAFKA
+   (
+       "kafka_broker_list" = "broker1:9092,broker2:9092",
+       "kafka_topic" = "my_topic",
+       "property.security.protocol" = "SASL_PLAINTEXT",
+       "property.sasl.kerberos.service.name" = "kafka",
+       "property.sasl.kerberos.keytab" = "/etc/krb5.keytab",
+       "property.sasl.kerberos.principal" = "doris@YOUR.COM"
+   );
+   ```
+
+**Note:**
+- To enable Doris to access the Kafka cluster with Kerberos authentication enabled, you need to deploy the Kerberos client kinit on all running nodes of the Doris cluster, configure krb5.conf, and fill in KDC service information.
+- Configure property.sasl.kerberos The value of keytab needs to specify the absolute path of the keytab local file and allow Doris processes to access the local file.
+
+</version>
+
 ### Viewing Job Status
 
 Specific commands and examples to view the status of **jobs** can be viewed with the `HELP SHOW ROUTINE LOAD;` command.
@@ -414,15 +593,11 @@ Some system configuration parameters can affect the use of routine import.
 
    BE configuration item, default is 3. This parameter indicates the maximum number of consumers that can be generated for data consumption in a subtask. For a Kafka data source, a consumer may consume one or more kafka partitions. If there are only 2 partitions, only 2 consumers are generated, each consuming 1 partition. 5. push_write_mby
 
-5. push_write_mbytes_per_sec
-
-   BE configuration item. The default is 10, i.e. 10MB/s. This parameter is generic for importing and is not limited to routine import jobs. This parameter limits the speed at which imported data can be written to disk. For high performance storage devices such as SSDs, this speed limit can be increased as appropriate. 6.
-
-6. max_tolerable_backend_down_num 
+5. max_tolerable_backend_down_num 
 
    FE configuration item, the default value is 0. Doris can PAUSED job rescheduling to RUNNING if certain conditions are met. 0 means rescheduling is allowed only if all BE nodes are ALIVE.
 
-7. period_of_auto_resume_min 
+6. period_of_auto_resume_min 
 
    FE configuration item, the default is 5 minutes, Doris rescheduling will only be attempted up to 3 times within the 5 minute period. If all 3 attempts fail, the current task is locked and no further scheduling is performed. However, manual recovery can be done through human intervention.
 

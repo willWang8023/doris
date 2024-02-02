@@ -23,8 +23,8 @@ import org.apache.doris.nereids.properties.PhysicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.RelationId;
-import org.apache.doris.nereids.trees.plans.algebra.Scan;
-import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
+import org.apache.doris.nereids.trees.plans.algebra.Relation;
+import org.apache.doris.statistics.Statistics;
 
 import com.google.common.collect.ImmutableList;
 
@@ -35,35 +35,27 @@ import java.util.Optional;
 /**
  * Abstract class for all physical scan plan.
  */
-public abstract class PhysicalRelation extends PhysicalLeaf implements Scan {
+public abstract class PhysicalRelation extends PhysicalLeaf implements Relation {
 
-    protected final List<String> qualifier;
-
-    protected final RelationId id;
+    protected final RelationId relationId;
 
     /**
      * Constructor for PhysicalRelation.
      */
-    public PhysicalRelation(RelationId id, PlanType type, List<String> qualifier,
+    public PhysicalRelation(RelationId relationId, PlanType type,
             Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties) {
         super(type, groupExpression, logicalProperties);
-        this.qualifier = Objects.requireNonNull(qualifier, "qualifier can not be null");
-        this.id = id;
+        this.relationId = relationId;
     }
 
     /**
      * Constructor for PhysicalRelation.
      */
-    public PhysicalRelation(RelationId id, PlanType type, List<String> qualifier,
+    public PhysicalRelation(RelationId relationId, PlanType type,
             Optional<GroupExpression> groupExpression, LogicalProperties logicalProperties,
-            PhysicalProperties physicalProperties) {
-        super(type, groupExpression, logicalProperties, physicalProperties);
-        this.qualifier = Objects.requireNonNull(qualifier, "qualifier can not be null");
-        this.id = id;
-    }
-
-    public List<String> getQualifier() {
-        return qualifier;
+            PhysicalProperties physicalProperties, Statistics statistics) {
+        super(type, groupExpression, logicalProperties, physicalProperties, statistics);
+        this.relationId = relationId;
     }
 
     @Override
@@ -75,17 +67,12 @@ public abstract class PhysicalRelation extends PhysicalLeaf implements Scan {
             return false;
         }
         PhysicalRelation that = (PhysicalRelation) o;
-        return this.id.equals(that.id) && Objects.equals(qualifier, that.qualifier);
+        return Objects.equals(relationId, that.relationId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(qualifier);
-    }
-
-    @Override
-    public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
-        return visitor.visitPhysicalScan(this, context);
+        return Objects.hash(relationId);
     }
 
     @Override
@@ -93,7 +80,11 @@ public abstract class PhysicalRelation extends PhysicalLeaf implements Scan {
         return ImmutableList.of();
     }
 
-    public RelationId getId() {
-        return id;
+    public RelationId getRelationId() {
+        return relationId;
+    }
+
+    public boolean canPushDownRuntimeFilter() {
+        return false;
     }
 }

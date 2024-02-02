@@ -18,13 +18,10 @@
 package org.apache.doris.qe;
 
 import org.apache.doris.catalog.Env;
-import org.apache.doris.common.Config;
-import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ThreadPoolManager;
 import org.apache.doris.common.util.DebugUtil;
-import org.apache.doris.mysql.MysqlProto;
-import org.apache.doris.mysql.nio.NConnectContext;
 import org.apache.doris.mysql.privilege.PrivPredicate;
+import org.apache.doris.qe.ConnectContext.ConnectType;
 import org.apache.doris.thrift.TUniqueId;
 
 import com.google.common.collect.Lists;
@@ -35,7 +32,6 @@ import org.apache.logging.log4j.Logger;
 import java.util.List;
 import java.util.Map;
 import java.util.TimerTask;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,8 +46,7 @@ public class ConnectScheduler {
     private final AtomicInteger nextConnectionId;
     private final Map<Integer, ConnectContext> connectionMap = Maps.newConcurrentMap();
     private final Map<String, AtomicInteger> connByUser = Maps.newConcurrentMap();
-    private final ExecutorService executor = ThreadPoolManager.newDaemonCacheThreadPool(
-            Config.max_connection_scheduler_threads_num, "connect-scheduler-pool", true);
+    private final Map<String, Integer> flightToken2ConnectionId = Maps.newConcurrentMap();
 
     // valid trace id -> query id
     private final Map<String, TUniqueId> traceId2QueryId = Maps.newConcurrentMap();
@@ -87,13 +82,8 @@ public class ConnectScheduler {
         if (context == null) {
             return false;
         }
-
         context.setConnectionId(nextConnectionId.getAndAdd(1));
-        // no necessary for nio.
-        if (context instanceof NConnectContext) {
-            return true;
-        }
-        executor.submit(new LoopHandler(context));
+        context.resetLoginTime();
         return true;
     }
 
@@ -112,6 +102,9 @@ public class ConnectScheduler {
             return false;
         }
         connectionMap.put(ctx.getConnectionId(), ctx);
+        if (ctx.getConnectType().equals(ConnectType.ARROW_FLIGHT_SQL)) {
+            flightToken2ConnectionId.put(ctx.getPeerIdentity(), ctx.getConnectionId());
+        }
         return true;
     }
 
@@ -123,11 +116,31 @@ public class ConnectScheduler {
                 conns.decrementAndGet();
             }
             numberConnection.decrementAndGet();
+            if (ctx.getConnectType().equals(ConnectType.ARROW_FLIGHT_SQL)) {
+                flightToken2ConnectionId.remove(ctx.getPeerIdentity());
+            }
         }
     }
 
     public ConnectContext getContext(int connectionId) {
         return connectionMap.get(connectionId);
+    }
+
+    public ConnectContext getContextWithQueryId(String queryId) {
+        for (ConnectContext context : connectionMap.values()) {
+            if (queryId.equals(DebugUtil.printId(context.queryId))) {
+                return context;
+            }
+        }
+        return null;
+    }
+
+    public ConnectContext getContext(String flightToken) {
+        if (flightToken2ConnectionId.containsKey(flightToken)) {
+            int connectionId = flightToken2ConnectionId.get(flightToken);
+            return getContext(connectionId);
+        }
+        return null;
     }
 
     public void cancelQuery(String queryId) {
@@ -148,7 +161,7 @@ public class ConnectScheduler {
         List<ConnectContext.ThreadInfo> infos = Lists.newArrayList();
         for (ConnectContext ctx : connectionMap.values()) {
             // Check auth
-            if (!ctx.getQualifiedUser().equals(user) && !Env.getCurrentEnv().getAuth()
+            if (!ctx.getQualifiedUser().equals(user) && !Env.getCurrentEnv().getAccessManager()
                     .checkGlobalPriv(ConnectContext.get(), PrivPredicate.GRANT)) {
                 continue;
             }
@@ -167,46 +180,7 @@ public class ConnectScheduler {
         return queryId == null ? "" : DebugUtil.printId(queryId);
     }
 
-    private class LoopHandler implements Runnable {
-        ConnectContext context;
-
-        LoopHandler(ConnectContext context) {
-            this.context = context;
-        }
-
-        @Override
-        public void run() {
-            try {
-                // Set thread local info
-                context.setThreadLocalInfo();
-                context.setConnectScheduler(ConnectScheduler.this);
-                // authenticate check failed.
-                if (!MysqlProto.negotiate(context)) {
-                    return;
-                }
-
-                if (registerConnection(context)) {
-                    MysqlProto.sendResponsePacket(context);
-                } else {
-                    context.getState().setError(ErrorCode.ERR_USER_LIMIT_REACHED, "Reach limit of connections");
-                    MysqlProto.sendResponsePacket(context);
-                    return;
-                }
-
-                context.setStartTime();
-                ConnectProcessor processor = new ConnectProcessor(context);
-                processor.loop();
-            } catch (Exception e) {
-                // for unauthorized access such lvs probe request, may cause exception, just log it in debug level
-                if (context.getCurrentUserIdentity() != null) {
-                    LOG.warn("connect processor exception because ", e);
-                } else {
-                    LOG.debug("connect processor exception because ", e);
-                }
-            } finally {
-                unregisterConnection(context);
-                context.cleanup();
-            }
-        }
+    public Map<Integer, ConnectContext> getConnectionMap() {
+        return connectionMap;
     }
 }

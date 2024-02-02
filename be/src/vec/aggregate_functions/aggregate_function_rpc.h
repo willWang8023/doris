@@ -17,12 +17,13 @@
 
 #pragma once
 
+#include <gen_cpp/Exprs_types.h>
+#include <gen_cpp/function_service.pb.h>
+
 #include <cstdint>
 #include <memory>
 
 #include "common/status.h"
-#include "exprs/rpc_fn_comm.h"
-#include "gen_cpp/Exprs_types.h"
 #include "json2pb/json_to_pb.h"
 #include "json2pb/pb_to_json.h"
 #include "runtime/exec_env.h"
@@ -33,13 +34,13 @@
 #include "vec/columns/column_string.h"
 #include "vec/columns/column_vector.h"
 #include "vec/columns/columns_number.h"
-#include "vec/common/exception.h"
 #include "vec/common/string_ref.h"
 #include "vec/core/block.h"
 #include "vec/core/column_numbers.h"
 #include "vec/core/field.h"
 #include "vec/core/types.h"
 #include "vec/data_types/data_type_string.h"
+#include "vec/functions/function_rpc.h"
 #include "vec/io/io_helper.h"
 namespace doris::vectorized {
 
@@ -74,7 +75,7 @@ public:
     bool has_error() { return _error == true; }
 
     Status merge(AggregateRpcUdafData& rhs) {
-        send_buffer_to_rpc_server();
+        static_cast<void>(send_buffer_to_rpc_server());
         if (has_last_result()) {
             PFunctionCallRequest request;
             PFunctionCallResponse response;
@@ -152,20 +153,10 @@ public:
                             int end, const DataTypes& argument_types) {
         for (int i = 0; i < argument_types.size(); i++) {
             PValues* arg = request.add_args();
-            if (auto* nullable = vectorized::check_and_get_column<const vectorized::ColumnNullable>(
-                        *columns[i])) {
-                auto data_col = nullable->get_nested_column_ptr();
-                auto& null_col = nullable->get_null_map_column();
-                auto data_type = std::reinterpret_pointer_cast<const vectorized::DataTypeNullable>(
-                        argument_types[i]);
-                data_col->get_data_at(0);
-                convert_nullable_col_to_pvalue(data_col->convert_to_full_column_if_const(),
-                                               data_type->get_nested_type(), null_col, arg, start,
-                                               end);
-
-            } else {
-                convert_col_to_pvalue<false>(columns[i]->convert_to_full_column_if_const(),
-                                             argument_types[i], arg, start, end);
+            auto data_type = argument_types[i];
+            if (auto st = data_type->get_serde()->write_column_to_pb(*columns[i], *arg, start, end);
+                !st.ok()) {
+                return st;
             }
         }
         return Status::OK();
@@ -201,10 +192,10 @@ public:
     Status buffer_add(const IColumn** columns, int start, int end,
                       const DataTypes& argument_types) {
         PFunctionCallRequest request;
-        gen_request_data(request, columns, start, end, argument_types);
+        static_cast<void>(gen_request_data(request, columns, start, end, argument_types));
         _buffer_request.push_back(request);
         if (_buffer_request.size() >= max_buffered_rows) {
-            send_buffer_to_rpc_server();
+            static_cast<void>(send_buffer_to_rpc_server());
         }
         return Status::OK();
     }
@@ -235,7 +226,7 @@ public:
         PFunctionCallResponse response;
         brpc::Controller cntl;
         request.set_function_name(_update_fn);
-        gen_request_data(request, columns, start, end, argument_types);
+        static_cast<void>(gen_request_data(request, columns, start, end, argument_types));
         if (has_last_result()) {
             request.mutable_context()->mutable_function_context()->mutable_args_data()->CopyFrom(
                     _res.result());
@@ -247,7 +238,7 @@ public:
     }
 
     void serialize(BufferWritable& buf) {
-        send_buffer_to_rpc_server();
+        static_cast<void>(send_buffer_to_rpc_server());
         std::string serialize_data = error_default_str;
         if (!has_error()) {
             serialize_data = _res.SerializeAsString();
@@ -258,7 +249,7 @@ public:
     }
 
     void deserialize(BufferReadable& buf) {
-        send_buffer_to_rpc_server();
+        static_cast<void>(send_buffer_to_rpc_server());
         std::string serialize_data;
         read_binary(serialize_data, buf);
         if (error_default_str != serialize_data) {
@@ -287,14 +278,14 @@ public:
             to.insert_default();
             return Status::OK();
         }
-        send_buffer_to_rpc_server();
+        static_cast<void>(send_buffer_to_rpc_server());
         PFunctionCallRequest request;
         PFunctionCallResponse response;
         brpc::Controller cntl;
         request.set_function_name(_finalize_fn);
         request.mutable_context()->mutable_function_context()->mutable_args_data()->CopyFrom(
                 _res.result());
-        send_rpc_request(cntl, request, response);
+        static_cast<void>(send_rpc_request(cntl, request, response));
         if (has_error()) {
             to.insert_default();
             return Status::OK();
@@ -337,7 +328,7 @@ public:
     }
 
     PFunctionCallResponse get_result() {
-        send_buffer_to_rpc_server();
+        static_cast<void>(send_buffer_to_rpc_server());
         return _res;
     }
 };
@@ -345,22 +336,21 @@ public:
 class AggregateRpcUdaf final
         : public IAggregateFunctionDataHelper<AggregateRpcUdafData, AggregateRpcUdaf> {
 public:
-    AggregateRpcUdaf(const TFunction& fn, const DataTypes& argument_types, const Array& parameters,
+    AggregateRpcUdaf(const TFunction& fn, const DataTypes& argument_types_,
                      const DataTypePtr& return_type)
-            : IAggregateFunctionDataHelper(argument_types, parameters),
-              _fn(fn),
-              _return_type(return_type) {}
+            : IAggregateFunctionDataHelper(argument_types_), _fn(fn), _return_type(return_type) {}
     ~AggregateRpcUdaf() = default;
 
-    static AggregateFunctionPtr create(const TFunction& fn, const DataTypes& argument_types,
-                                       const Array& parameters, const DataTypePtr& return_type) {
-        return std::make_shared<AggregateRpcUdaf>(fn, argument_types, parameters, return_type);
+    static AggregateFunctionPtr create(const TFunction& fn, const DataTypes& argument_types_,
+                                       const DataTypePtr& return_type) {
+        return std::make_shared<AggregateRpcUdaf>(fn, argument_types_, return_type);
     }
 
     void create(AggregateDataPtr __restrict place) const override {
         new (place) Data(argument_types.size());
         Status status = Status::OK();
-        RETURN_IF_STATUS_ERROR(status, data(place).init(_fn));
+        SAFE_CREATE(RETURN_IF_STATUS_ERROR(status, data(place).init(_fn)),
+                    this->data(place).~Data());
     }
 
     String get_name() const override { return _fn.name.function_name; }
@@ -369,19 +359,20 @@ public:
 
     void add(AggregateDataPtr __restrict place, const IColumn** columns, size_t row_num,
              Arena*) const override {
-        this->data(place).buffer_add(columns, row_num, row_num + 1, argument_types);
+        static_cast<void>(
+                this->data(place).buffer_add(columns, row_num, row_num + 1, argument_types));
     }
 
     void add_batch_single_place(size_t batch_size, AggregateDataPtr place, const IColumn** columns,
                                 Arena* arena) const override {
-        this->data(place).add(columns, 0, batch_size, argument_types);
+        static_cast<void>(this->data(place).add(columns, 0, batch_size, argument_types));
     }
 
     void reset(AggregateDataPtr place) const override {}
 
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs,
                Arena*) const override {
-        this->data(place).merge(this->data(const_cast<AggregateDataPtr>(rhs)));
+        static_cast<void>(this->data(place).merge(this->data(const_cast<AggregateDataPtr>(rhs))));
     }
 
     void serialize(ConstAggregateDataPtr __restrict place, BufferWritable& buf) const override {
@@ -394,7 +385,7 @@ public:
     }
 
     void insert_result_into(ConstAggregateDataPtr __restrict place, IColumn& to) const override {
-        this->data(const_cast<AggregateDataPtr>(place)).get(to, _return_type);
+        static_cast<void>(this->data(const_cast<AggregateDataPtr>(place)).get(to, _return_type));
     }
 
 private:

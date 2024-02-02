@@ -17,19 +17,37 @@
 
 package org.apache.doris.nereids.properties;
 
+import org.apache.doris.common.Id;
+import org.apache.doris.nereids.trees.expressions.ExprId;
+import org.apache.doris.nereids.trees.expressions.NamedExpression;
 import org.apache.doris.nereids.trees.expressions.Slot;
 
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Logical properties used for analysis and optimize in Nereids.
  */
 public class LogicalProperties {
-    protected Supplier<List<Slot>> outputSupplier;
+    protected final Supplier<List<Slot>> outputSupplier;
+    protected final Supplier<List<Id>> outputExprIdsSupplier;
+    protected final Supplier<Set<Slot>> outputSetSupplier;
+    protected final Supplier<Map<Slot, Slot>> outputMapSupplier;
+    protected final Supplier<Set<ExprId>> outputExprIdSetSupplier;
+    protected final Supplier<FunctionalDependencies> fdSupplier;
+    private Integer hashCode = null;
+
+    public LogicalProperties(Supplier<List<Slot>> outputSupplier, Supplier<FunctionalDependencies> fdSupplier) {
+        this(outputSupplier, fdSupplier, ImmutableList::of);
+    }
 
     /**
      * constructor of LogicalProperties.
@@ -37,9 +55,28 @@ public class LogicalProperties {
      * @param outputSupplier provide the output. Supplier can lazy compute output without
      *                       throw exception for which children have UnboundRelation
      */
-    public LogicalProperties(Supplier<List<Slot>> outputSupplier) {
+    public LogicalProperties(Supplier<List<Slot>> outputSupplier,
+            Supplier<FunctionalDependencies> fdSupplier, Supplier<List<Slot>> nonUserVisibleOutputSupplier) {
         this.outputSupplier = Suppliers.memoize(
                 Objects.requireNonNull(outputSupplier, "outputSupplier can not be null")
+        );
+        this.outputExprIdsSupplier = Suppliers.memoize(
+                () -> this.outputSupplier.get().stream().map(NamedExpression::getExprId).map(Id.class::cast)
+                        .collect(ImmutableList.toImmutableList())
+        );
+        this.outputSetSupplier = Suppliers.memoize(
+                () -> ImmutableSet.copyOf(this.outputSupplier.get())
+        );
+        this.outputMapSupplier = Suppliers.memoize(
+                () -> this.outputSetSupplier.get().stream().collect(ImmutableMap.toImmutableMap(s -> s, s -> s))
+        );
+        this.outputExprIdSetSupplier = Suppliers.memoize(
+                () -> this.outputSupplier.get().stream()
+                        .map(NamedExpression::getExprId)
+                        .collect(ImmutableSet.toImmutableSet())
+        );
+        this.fdSupplier = Suppliers.memoize(
+                Objects.requireNonNull(fdSupplier, "FunctionalDependencies can not be null")
         );
     }
 
@@ -47,8 +84,36 @@ public class LogicalProperties {
         return outputSupplier.get();
     }
 
-    public LogicalProperties withOutput(List<Slot> output) {
-        return new LogicalProperties(Suppliers.ofInstance(output));
+    public Set<Slot> getOutputSet() {
+        return outputSetSupplier.get();
+    }
+
+    public Map<Slot, Slot> getOutputMap() {
+        return outputMapSupplier.get();
+    }
+
+    public Set<ExprId> getOutputExprIdSet() {
+        return outputExprIdSetSupplier.get();
+    }
+
+    public FunctionalDependencies getFunctionalDependencies() {
+        return fdSupplier.get();
+    }
+
+    public List<Id> getOutputExprIds() {
+        return outputExprIdsSupplier.get();
+    }
+
+    @Override
+    public String toString() {
+        return "LogicalProperties{"
+                + "\noutputSupplier=" + outputSupplier.get()
+                + "\noutputExprIdsSupplier=" + outputExprIdsSupplier.get()
+                + "\noutputSetSupplier=" + outputSetSupplier.get()
+                + "\noutputMapSupplier=" + outputMapSupplier.get()
+                + "\noutputExprIdSetSupplier=" + outputExprIdSetSupplier.get()
+                + "\nhashCode=" + hashCode
+                + '}';
     }
 
     @Override
@@ -60,11 +125,25 @@ public class LogicalProperties {
             return false;
         }
         LogicalProperties that = (LogicalProperties) o;
-        return Objects.equals(outputSupplier.get(), that.outputSupplier.get());
+        Set<Slot> thisOutSet = this.outputSetSupplier.get();
+        Set<Slot> thatOutSet = that.outputSetSupplier.get();
+        if (!Objects.equals(thisOutSet, thatOutSet)) {
+            return false;
+        }
+        for (Slot thisOutSlot : thisOutSet) {
+            Slot thatOutSlot = that.getOutputMap().get(thisOutSlot);
+            if (thisOutSlot.nullable() != thatOutSlot.nullable()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(outputSupplier.get());
+        if (hashCode == null) {
+            hashCode = Objects.hash(outputExprIdSetSupplier.get());
+        }
+        return hashCode;
     }
 }

@@ -23,6 +23,7 @@ import org.apache.doris.analysis.AlterTableStmt;
 import org.apache.doris.analysis.CreateDbStmt;
 import org.apache.doris.analysis.CreateResourceStmt;
 import org.apache.doris.analysis.CreateTableStmt;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.common.FeConstants;
 import org.apache.doris.qe.ConnectContext;
@@ -55,9 +56,10 @@ public class EnvOperationTest {
         String createDbStmtStr = "create database test;";
         CreateDbStmt createDbStmt = (CreateDbStmt) UtFrameUtils.parseAndAnalyzeStmt(createDbStmtStr, connectContext);
         Env.getCurrentEnv().createDb(createDbStmt);
+        Config.enable_odbc_mysql_broker_table = true;
 
         createTable("create table test.renameTest\n"
-                + "(k1 int)\n"
+                + "(k1 int,k2 int)\n"
                 + "distributed by hash(k1) buckets 1\n"
                 + "properties(\"replication_num\" = \"1\");");
 
@@ -110,7 +112,7 @@ public class EnvOperationTest {
         String renameTblStmt = "alter table test.renameTest rename newNewTest";
         AlterTableStmt alterTableStmt = (AlterTableStmt) UtFrameUtils.parseAndAnalyzeStmt(renameTblStmt, connectContext);
 
-        Database db = Env.getCurrentInternalCatalog().getDbNullable("default_cluster:test");
+        Database db = Env.getCurrentInternalCatalog().getDbNullable("test");
         Assert.assertNotNull(db);
         Assert.assertNotNull(db.getTableNullable("renameTest"));
 
@@ -119,7 +121,7 @@ public class EnvOperationTest {
         Assert.assertNotNull(db.getTableNullable("newNewTest"));
 
         // add a rollup and test rename to a rollup name(expect throw exception)
-        String alterStmtStr = "alter table test.newNewTest add rollup r1(k1)";
+        String alterStmtStr = "alter table test.newNewTest add rollup r1(k2,k1)";
         alterTableStmt = (AlterTableStmt) UtFrameUtils.parseAndAnalyzeStmt(alterStmtStr, connectContext);
         Env.getCurrentEnv().getAlterInstance().processAlterTable(alterTableStmt);
         Map<Long, AlterJobV2> alterJobs = Env.getCurrentEnv().getMaterializedViewHandler().getAlterJobsV2();

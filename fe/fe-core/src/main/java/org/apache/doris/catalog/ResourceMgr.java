@@ -23,6 +23,7 @@ import org.apache.doris.analysis.DropResourceStmt;
 import org.apache.doris.catalog.Resource.ResourceType;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.DdlException;
+import org.apache.doris.common.PatternMatcher;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
 import org.apache.doris.common.proc.BaseProcResult;
@@ -48,6 +49,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Resource manager is responsible for managing external resources used by Doris.
@@ -70,43 +72,45 @@ public class ResourceMgr implements Writable {
     }
 
     public void createResource(CreateResourceStmt stmt) throws DdlException {
-        if (stmt.getResourceType() != ResourceType.SPARK
-                && stmt.getResourceType() != ResourceType.ODBC_CATALOG
-                && stmt.getResourceType() != ResourceType.S3
-                && stmt.getResourceType() != ResourceType.JDBC) {
-            throw new DdlException("Only support SPARK, ODBC_CATALOG ,JDBC, and REMOTE_STORAGE resource.");
+        if (stmt.getResourceType() == ResourceType.UNKNOWN) {
+            throw new DdlException("Only support SPARK, ODBC_CATALOG ,JDBC, S3_COOLDOWN, S3, HDFS and HMS resource.");
         }
         Resource resource = Resource.fromStmt(stmt);
-        createResource(resource);
-        // log add
-        Env.getCurrentEnv().getEditLog().logCreateResource(resource);
-        LOG.info("Create resource success. Resource: {}", resource);
+        if (createResource(resource, stmt.isIfNotExists())) {
+            Env.getCurrentEnv().getEditLog().logCreateResource(resource);
+            LOG.info("Create resource success. Resource: {}", resource);
+        }
     }
 
-    public void createResource(Resource resource) throws DdlException {
+    // Return true if the resource is truly added,
+    // otherwise, return false or throw exception.
+    public boolean createResource(Resource resource, boolean ifNotExists) throws DdlException {
         String resourceName = resource.getName();
         if (nameToResource.putIfAbsent(resourceName, resource) != null) {
+            if (ifNotExists) {
+                return false;
+            }
             throw new DdlException("Resource(" + resourceName + ") already exist");
         }
+        return true;
     }
 
     public void replayCreateResource(Resource resource) {
+        resource.applyDefaultProperties();
         nameToResource.put(resource.getName(), resource);
     }
 
     public void dropResource(DropResourceStmt stmt) throws DdlException {
         String resourceName = stmt.getResourceName();
         if (!nameToResource.containsKey(resourceName)) {
+            if (stmt.isIfExists()) {
+                return;
+            }
             throw new DdlException("Resource(" + resourceName + ") does not exist");
         }
 
         Resource resource = nameToResource.get(resourceName);
-        if (resource.getType().equals(ResourceType.S3)
-                && !((S3Resource) resource).getCopiedUsedByPolicySet().isEmpty()) {
-            LOG.warn("S3 resource used by policy {}, can't drop it",
-                    ((S3Resource) resource).getCopiedUsedByPolicySet());
-            throw new DdlException("S3 resource used by policy, can't drop it.");
-        }
+        resource.dropResource();
 
         // Check whether the resource is in use before deleting it, except spark resource
         StoragePolicy checkedStoragePolicy = StoragePolicy.ofCheck(null);
@@ -127,7 +131,6 @@ public class ResourceMgr implements Writable {
         String name = resource.getName();
         if (nameToResource.remove(name) == null) {
             LOG.info("resource " + name + " does not exists.");
-            return;
         }
     }
 
@@ -167,7 +170,13 @@ public class ResourceMgr implements Writable {
         return nameToResource.size();
     }
 
-    public List<List<Comparable>> getResourcesInfo(String name, boolean accurateMatch, Set<String> typeSets) {
+    public List<Resource> getResource(ResourceType type) {
+        return nameToResource.values().stream().filter(resource -> resource.getType() == type)
+                .collect(Collectors.toList());
+    }
+
+    public List<List<Comparable>> getResourcesInfo(PatternMatcher matcher,
+            String name, boolean accurateMatch, Set<String> typeSets) {
         List<List<String>> targetRows = procNode.fetchResult().getRows();
         List<List<Comparable>> returnRows = Lists.newArrayList();
 
@@ -178,6 +187,10 @@ public class ResourceMgr implements Writable {
 
             String resourceName = row.get(0);
             String resourceType = row.get(1);
+
+            if (matcher != null && !matcher.match(resourceName)) {
+                continue;
+            }
 
             if (name != null) {
                 if (accurateMatch && !resourceName.equals(name)) {
@@ -228,8 +241,8 @@ public class ResourceMgr implements Writable {
             for (Map.Entry<String, Resource> entry : nameToResource.entrySet()) {
                 Resource resource = entry.getValue();
                 // check resource privs
-                if (!Env.getCurrentEnv().getAuth().checkResourcePriv(ConnectContext.get(), resource.getName(),
-                                                                             PrivPredicate.SHOW)) {
+                if (!Env.getCurrentEnv().getAccessManager().checkResourcePriv(ConnectContext.get(), resource.getName(),
+                                                                             PrivPredicate.SHOW_RESOURCES)) {
                     continue;
                 }
                 resource.getProcNodeData(result);

@@ -17,84 +17,92 @@
 
 package org.apache.doris.nereids.trees.plans.physical;
 
-import org.apache.doris.common.Pair;
-import org.apache.doris.nereids.trees.expressions.EqualTo;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.Slot;
-import org.apache.doris.nereids.trees.expressions.SlotReference;
-import org.apache.doris.nereids.trees.expressions.literal.Literal;
 import org.apache.doris.planner.RuntimeFilterId;
+import org.apache.doris.thrift.TMinMaxRuntimeFilterType;
 import org.apache.doris.thrift.TRuntimeFilterType;
+
+import com.google.common.collect.Lists;
+
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * runtime filter
  */
 public class RuntimeFilter {
 
-    private final Slot srcSlot;
-
-    private Slot targetSlot;
-
     private final RuntimeFilterId id;
-
     private final TRuntimeFilterType type;
-
+    private final Expression srcSlot;
+    //bitmap filter support target expression like  k1+1, abs(k1)
+    //targetExpression is an expression on targetSlot, in which there is only one non-const slot
+    private final List<Expression> targetExpressions;
+    private final List<Slot> targetSlots;
     private final int exprOrder;
+    private final AbstractPhysicalJoin builderNode;
 
-    private boolean finalized = false;
+    private final boolean bitmapFilterNotIn;
 
-    private PhysicalHashJoin builderNode;
+    private final long buildSideNdv;
+    // use for min-max filter only. specify if the min or max side is valid
+    private final TMinMaxRuntimeFilterType tMinMaxType;
+
+    private final List<PhysicalRelation> targetScans = Lists.newArrayList();
+
+    private final boolean bloomFilterSizeCalculatedByNdv;
 
     /**
      * constructor
      */
-    public RuntimeFilter(RuntimeFilterId id, Slot src, Slot target, TRuntimeFilterType type,
-            int exprOrder, PhysicalHashJoin builderNode) {
-        this.id = id;
-        this.srcSlot = src;
-        this.targetSlot = target;
-        this.type = type;
-        this.exprOrder = exprOrder;
-        this.builderNode = builderNode;
+    public RuntimeFilter(RuntimeFilterId id, Expression src, List<Slot> targets, List<Expression> targetExpressions,
+                         TRuntimeFilterType type, int exprOrder, AbstractPhysicalJoin builderNode, long buildSideNdv,
+                         boolean bloomFilterSizeCalculatedByNdv,
+                         PhysicalRelation scan) {
+        this(id, src, targets, targetExpressions, type, exprOrder,
+                builderNode, false, buildSideNdv, bloomFilterSizeCalculatedByNdv,
+                TMinMaxRuntimeFilterType.MIN_MAX, scan);
+    }
+
+    public RuntimeFilter(RuntimeFilterId id, Expression src, List<Slot> targets, List<Expression> targetExpressions,
+                         TRuntimeFilterType type, int exprOrder, AbstractPhysicalJoin builderNode,
+                         boolean bitmapFilterNotIn, long buildSideNdv, boolean bloomFilterSizeCalculatedByNdv,
+                         PhysicalRelation scan) {
+        this(id, src, targets, targetExpressions, type, exprOrder,
+                builderNode, bitmapFilterNotIn, buildSideNdv, bloomFilterSizeCalculatedByNdv,
+                TMinMaxRuntimeFilterType.MIN_MAX, scan);
     }
 
     /**
-     * create RF
+     * constructor
      */
-    public static RuntimeFilter createRuntimeFilter(RuntimeFilterId id, EqualTo conjunction,
-            TRuntimeFilterType type, int exprOrder, PhysicalHashJoin node) {
-        Pair<Expression, Expression> srcs = checkAndMaybeSwapChild(conjunction, node);
-        if (srcs == null) {
-            return null;
-        }
-        return new RuntimeFilter(id, ((SlotReference) srcs.second), ((SlotReference) srcs.first), type, exprOrder,
-                node);
+    public RuntimeFilter(RuntimeFilterId id, Expression src, List<Slot> targets, List<Expression> targetExpressions,
+                         TRuntimeFilterType type, int exprOrder, AbstractPhysicalJoin builderNode,
+                         boolean bitmapFilterNotIn, long buildSideNdv, boolean bloomFilterSizeCalculatedByNdv,
+                         TMinMaxRuntimeFilterType tMinMaxType,
+                         PhysicalRelation scan) {
+        this.id = id;
+        this.srcSlot = src;
+        this.targetSlots = Lists.newArrayList(targets);
+        this.targetExpressions = Lists.newArrayList(targetExpressions);
+        this.type = type;
+        this.exprOrder = exprOrder;
+        this.builderNode = builderNode;
+        this.bitmapFilterNotIn = bitmapFilterNotIn;
+        this.bloomFilterSizeCalculatedByNdv = bloomFilterSizeCalculatedByNdv;
+        this.buildSideNdv = buildSideNdv <= 0 ? -1L : buildSideNdv;
+        this.tMinMaxType = tMinMaxType;
+        builderNode.addRuntimeFilter(this);
+        this.targetScans.add(scan);
     }
 
-    private static Pair<Expression, Expression> checkAndMaybeSwapChild(EqualTo expr,
-            PhysicalHashJoin join) {
-        if (expr.children().stream().anyMatch(Literal.class::isInstance)) {
-            return null;
-        }
-        if (expr.child(0).equals(expr.child(1))) {
-            return null;
-        }
-        if (!expr.children().stream().allMatch(SlotReference.class::isInstance)) {
-            return null;
-        }
-        //current we assume that there are certainly different slot reference in equal to.
-        //they are not from the same relation.
-        int exchangeTag = join.child(0).getOutput().stream().anyMatch(slot -> slot.getExprId().equals(
-                ((SlotReference) expr.child(1)).getExprId())) ? 1 : 0;
-        return Pair.of(expr.child(exchangeTag), expr.child(1 ^ exchangeTag));
+    public TMinMaxRuntimeFilterType gettMinMaxType() {
+        return tMinMaxType;
     }
 
-    public Slot getSrcExpr() {
+    public Expression getSrcExpr() {
         return srcSlot;
-    }
-
-    public Slot getTargetExpr() {
-        return targetSlot;
     }
 
     public RuntimeFilterId getId() {
@@ -109,19 +117,65 @@ public class RuntimeFilter {
         return exprOrder;
     }
 
-    public PhysicalHashJoin getBuilderNode() {
+    public AbstractPhysicalJoin getBuilderNode() {
         return builderNode;
     }
 
-    public void setTargetSlot(Slot targetSlot) {
-        this.targetSlot = targetSlot;
+    public boolean isBitmapFilterNotIn() {
+        return bitmapFilterNotIn;
     }
 
-    public boolean isUninitialized() {
-        return !finalized;
+    public List<Expression> getTargetExpressions() {
+        return targetExpressions;
     }
 
-    public void setFinalized() {
-        this.finalized = true;
+    public long getBuildSideNdv() {
+        return buildSideNdv;
+    }
+
+    public void addTargetSlot(Slot target, Expression targetExpression, PhysicalRelation scan) {
+        targetExpressions.add(targetExpression);
+        targetSlots.add(target);
+        targetScans.add(scan);
+    }
+
+    public List<Slot> getTargetSlots() {
+        return targetSlots;
+    }
+
+    public List<PhysicalRelation> getTargetScans() {
+        return targetScans;
+    }
+
+    public boolean hasTargetScan(PhysicalRelation scan) {
+        return targetScans.contains(scan);
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("RF").append(id.asInt())
+                .append("[").append(getSrcExpr()).append("->").append(targetExpressions)
+                .append("(ndv/size = ").append(buildSideNdv).append("/")
+                .append(org.apache.doris.planner.RuntimeFilter.expectRuntimeFilterSize(buildSideNdv))
+                .append(")");
+        return sb.toString();
+    }
+
+    /**
+     * print rf in explain shape plan
+     * @return brief version of toString()
+     */
+    public String shapeInfo() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("RF").append(id.asInt())
+                .append(" ").append(getSrcExpr().toSql()).append("->[").append(
+                        targetExpressions.stream().map(expr -> expr.toSql()).collect(Collectors.joining(",")))
+                .append("]");
+        return sb.toString();
+    }
+
+    public boolean isBloomFilterSizeCalculatedByNdv() {
+        return bloomFilterSizeCalculatedByNdv;
     }
 }

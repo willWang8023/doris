@@ -20,11 +20,12 @@
 
 #pragma once
 
+#include <gen_cpp/Metrics_types.h>
+#include <stdint.h>
+
 #include <iostream>
 #include <string>
 #include <vector>
-
-#include "util/debug_util.h"
 
 // This is a utility class that aggregates counters from the kernel.  These counters
 // come from different sources.
@@ -103,6 +104,7 @@ public:
         int64_t vm_size = 0;
         int64_t vm_peak = 0;
         int64_t vm_rss = 0;
+        int64_t vm_hwm = 0;
     };
 
     static int parse_int(const std::string& state_key);
@@ -115,7 +117,11 @@ public:
     static void refresh_proc_status();
     static void get_proc_status(ProcStatus* out);
     // Return the process actual physical memory in bytes.
-    static inline int64_t get_vm_rss() { return parse_bytes("status/VmRSS"); }
+    static inline int64_t get_vm_rss() { return _vm_rss; }
+    static inline std::string get_vm_rss_str() { return _vm_rss_str; }
+    static inline int64_t get_vm_hwm() { return _vm_hwm; }
+    static inline int64_t get_vm_size() { return _vm_size; }
+    static inline int64_t get_vm_peak() { return _vm_peak; }
 
 private:
     // Copy constructor and assignment not allowed
@@ -159,6 +165,12 @@ private:
     // System perf counters can be grouped together.  The OS will update all grouped counters
     // at the same time.  This is useful to better correlate counter values.
     int _group_fd;
+
+    static int64_t _vm_rss;
+    static std::string _vm_rss_str;
+    static int64_t _vm_hwm;
+    static int64_t _vm_size;
+    static int64_t _vm_peak;
 };
 
 } // namespace doris

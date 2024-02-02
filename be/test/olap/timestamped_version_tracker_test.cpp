@@ -16,13 +16,29 @@
 // under the License.
 
 #include <cctz/time_zone.h>
-#include <gtest/gtest.h>
+#include <fmt/format.h>
+#include <gtest/gtest-message.h>
+#include <gtest/gtest-test-part.h>
+#include <rapidjson/document.h>
+#include <rapidjson/encodings.h>
+#include <rapidjson/prettywriter.h>
+#include <rapidjson/stringbuffer.h>
+#include <stdint.h>
 
-#include <filesystem>
-#include <fstream>
-#include <sstream>
+// IWYU pragma: no_include <bits/chrono.h>
+#include <chrono> // IWYU pragma: keep
+#include <list>
+#include <map>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
+#include "gtest/gtest_pred_impl.h"
 #include "gutil/strings/substitute.h"
+#include "json2pb/json_to_pb.h"
+#include "olap/olap_common.h"
 #include "olap/rowset/rowset_meta.h"
 #include "olap/version_graph.h"
 
@@ -51,70 +67,19 @@ public:
                 "hi": -5350970832824939812,
                 "lo": -6717994719194512122
             },
-            "creation_time": 1553765670,
-            "alpha_rowset_extra_meta_pb": {
-                "segment_groups": [
-                {
-                    "segment_group_id": 0,
-                    "num_segments": 1,
-                    "index_size": 132,
-                    "data_size": 576,
-                    "num_rows": 5,
-                    "zone_maps": [
-                    {
-                        "min": "MQ==",
-                        "max": "NQ==",
-                        "null_flag": false
-                    },
-                    {
-                        "min": "MQ==",
-                        "max": "Mw==",
-                        "null_flag": false
-                    },
-                    {
-                        "min": "J2J1c2gn",
-                        "max": "J3RvbSc=",
-                        "null_flag": false
-                    }
-                    ],
-                    "empty": false
-                },
-                {
-                    "segment_group_id": 1,
-                    "num_segments": 1,
-                    "index_size": 132,
-                    "data_size": 576,
-                    "num_rows": 5,
-                    "zone_maps": [
-                    {
-                        "min": "MQ==",
-                        "max": "NQ==",
-                        "null_flag": false
-                    },
-                    {
-                        "min": "MQ==",
-                        "max": "Mw==",
-                        "null_flag": false
-                    },
-                    {
-                        "min": "J2J1c2gn",
-                        "max": "J3RvbSc=",
-                        "null_flag": false
-                    }
-                    ],
-                    "empty": false
-                }
-                ]
-            }
+            "creation_time": 1553765670
         })";
     }
     void TearDown() override {}
 
     void init_rs_meta(RowsetMetaSharedPtr& pb1, int64_t start, int64_t end) {
-        pb1->init_from_json(_json_rowset_meta);
-        pb1->set_start_version(start);
-        pb1->set_end_version(end);
-        pb1->set_creation_time(10000);
+        RowsetMetaPB rowset_meta_pb;
+        json2pb::JsonToProtoMessage(_json_rowset_meta, &rowset_meta_pb);
+        rowset_meta_pb.set_start_version(start);
+        rowset_meta_pb.set_end_version(end);
+        rowset_meta_pb.set_creation_time(10000);
+
+        pb1->init_from_pb(rowset_meta_pb);
     }
 
     void init_all_rs_meta(std::vector<RowsetMetaSharedPtr>* rs_metas) {
@@ -341,7 +306,7 @@ TEST_F(TestTimestampedVersionTracker, delete_version_from_graph) {
     Version version0(0, 0);
 
     version_graph.add_version_to_graph(version0);
-    version_graph.delete_version_from_graph(version0);
+    static_cast<void>(version_graph.delete_version_from_graph(version0));
 
     EXPECT_EQ(2, version_graph._version_graph.size());
     EXPECT_EQ(0, version_graph._version_graph[0].edges.size());
@@ -356,7 +321,7 @@ TEST_F(TestTimestampedVersionTracker, delete_version_from_graph_with_same_versio
     version_graph.add_version_to_graph(version0);
     version_graph.add_version_to_graph(version1);
 
-    version_graph.delete_version_from_graph(version0);
+    static_cast<void>(version_graph.delete_version_from_graph(version0));
 
     EXPECT_EQ(2, version_graph._version_graph.size());
     EXPECT_EQ(1, version_graph._version_graph[0].edges.size());
@@ -404,7 +369,7 @@ TEST_F(TestTimestampedVersionTracker, capture_consistent_versions) {
     version_graph.construct_version_graph(rs_metas, &max_version);
 
     Version spec_version(0, 8);
-    version_graph.capture_consistent_versions(spec_version, &version_path);
+    static_cast<void>(version_graph.capture_consistent_versions(spec_version, &version_path));
 
     EXPECT_EQ(4, version_path.size());
     EXPECT_EQ(Version(0, 0), version_path[0]);
@@ -428,7 +393,7 @@ TEST_F(TestTimestampedVersionTracker, capture_consistent_versions_with_same_rows
     version_graph.construct_version_graph(rs_metas, &max_version);
 
     Version spec_version(0, 8);
-    version_graph.capture_consistent_versions(spec_version, &version_path);
+    static_cast<void>(version_graph.capture_consistent_versions(spec_version, &version_path));
 
     EXPECT_EQ(4, version_path.size());
     EXPECT_EQ(Version(0, 0), version_path[0]);
@@ -585,7 +550,7 @@ TEST_F(TestTimestampedVersionTracker, capture_consistent_versions_tracker) {
     }
 
     Version spec_version(0, 8);
-    tracker.capture_consistent_versions(spec_version, &version_path);
+    static_cast<void>(tracker.capture_consistent_versions(spec_version, &version_path));
 
     EXPECT_EQ(4, version_path.size());
     EXPECT_EQ(Version(0, 0), version_path[0]);
@@ -612,7 +577,7 @@ TEST_F(TestTimestampedVersionTracker, capture_consistent_versions_tracker_with_s
     }
 
     Version spec_version(0, 8);
-    tracker.capture_consistent_versions(spec_version, &version_path);
+    static_cast<void>(tracker.capture_consistent_versions(spec_version, &version_path));
 
     EXPECT_EQ(4, version_path.size());
     EXPECT_EQ(Version(0, 0), version_path[0]);
@@ -838,8 +803,8 @@ TEST_F(TestTimestampedVersionTracker, get_version_graph_orphan_vertex_ratio) {
     version_graph.add_version_to_graph(version1);
     version_graph.add_version_to_graph(version2);
     version_graph.add_version_to_graph(version3);
-    version_graph.delete_version_from_graph(version2);
-    version_graph.delete_version_from_graph(version3);
+    static_cast<void>(version_graph.delete_version_from_graph(version2));
+    static_cast<void>(version_graph.delete_version_from_graph(version3));
 
     EXPECT_EQ(5, version_graph._version_graph.size());
     EXPECT_EQ(0.4, version_graph.get_orphan_vertex_ratio());

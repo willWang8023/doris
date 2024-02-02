@@ -20,7 +20,17 @@ package org.apache.doris.nereids.rules.exploration.join;
 import org.apache.doris.common.Pair;
 import org.apache.doris.nereids.rules.Rule;
 import org.apache.doris.nereids.rules.RuleType;
+import org.apache.doris.nereids.rules.exploration.CBOUtils;
 import org.apache.doris.nereids.rules.exploration.OneExplorationRuleFactory;
+import org.apache.doris.nereids.trees.expressions.ExprId;
+import org.apache.doris.nereids.trees.plans.GroupPlan;
+import org.apache.doris.nereids.trees.plans.Plan;
+import org.apache.doris.nereids.trees.plans.logical.LogicalJoin;
+
+import com.google.common.collect.ImmutableList;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Rule for change inner join LAsscom (associative and commutive).
@@ -40,16 +50,38 @@ public class OuterJoinLAsscomProject extends OneExplorationRuleFactory {
     @Override
     public Rule build() {
         return logicalJoin(logicalProject(logicalJoin()), group())
-                .when(topJoin -> OuterJoinLAsscom.check(topJoin, topJoin.left().child()))
                 .when(join -> OuterJoinLAsscom.VALID_TYPE_PAIR_SET.contains(
                         Pair.of(join.left().child().getJoinType(), join.getJoinType())))
+                .when(topJoin -> OuterJoinLAsscom.checkReorder(topJoin, topJoin.left().child()))
+                .whenNot(join -> join.hasDistributeHint() || join.left().child().hasDistributeHint())
+                .whenNot(join -> join.isMarkJoin() || join.left().child().isMarkJoin())
+                .when(topJoin -> OuterJoinLAsscom.checkCondition(topJoin,
+                        topJoin.left().child().right().getOutputExprIdSet()))
+                .when(join -> join.left().isAllSlots())
                 .then(topJoin -> {
-                    JoinLAsscomHelper helper = new JoinLAsscomHelper(topJoin, topJoin.left().child());
-                    helper.initProject(topJoin.left());
-                    if (!helper.initJoinOnCondition()) {
-                        return null;
-                    }
-                    return helper.newTopJoin();
+                    /* ********** init ********** */
+                    LogicalJoin<GroupPlan, GroupPlan> bottomJoin = topJoin.left().child();
+                    GroupPlan a = bottomJoin.left();
+                    GroupPlan b = bottomJoin.right();
+                    GroupPlan c = topJoin.right();
+
+                    /* ********** new Plan ********** */
+                    LogicalJoin newBottomJoin = topJoin.withChildrenNoContext(a, c);
+                    newBottomJoin.getJoinReorderContext().copyFrom(bottomJoin.getJoinReorderContext());
+                    newBottomJoin.getJoinReorderContext().setHasLAsscom(false);
+                    newBottomJoin.getJoinReorderContext().setHasCommute(false);
+
+                    Set<ExprId> topUsedExprIds = new HashSet<>(topJoin.getOutputExprIdSet());
+                    bottomJoin.getHashJoinConjuncts().forEach(e -> topUsedExprIds.addAll(e.getInputSlotExprIds()));
+                    bottomJoin.getOtherJoinConjuncts().forEach(e -> topUsedExprIds.addAll(e.getInputSlotExprIds()));
+                    Plan left = CBOUtils.newProject(topUsedExprIds, newBottomJoin);
+                    Plan right = CBOUtils.newProject(topUsedExprIds, b);
+
+                    LogicalJoin newTopJoin = bottomJoin.withChildrenNoContext(left, right);
+                    newTopJoin.getJoinReorderContext().copyFrom(topJoin.getJoinReorderContext());
+                    newTopJoin.getJoinReorderContext().setHasLAsscom(true);
+
+                    return CBOUtils.projectOrSelf(ImmutableList.copyOf(topJoin.getOutput()), newTopJoin);
                 }).toRule(RuleType.LOGICAL_OUTER_JOIN_LASSCOM_PROJECT);
     }
 }

@@ -15,14 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-suite("test_intersect") {
-    sql 'set enable_vectorized_engine=false'
-    qt_select """
-                SELECT * FROM (SELECT k1 FROM test_query_db.baseall
-                    INTERSECT SELECT k1 FROM test_query_db.test) a ORDER BY k1
-              """
-
-    sql 'set enable_vectorized_engine=true'
+suite("test_intersect", "arrow_flight_sql") {
     qt_select """
                 SELECT * FROM (SELECT k1 FROM test_query_db.baseall
                     INTERSECT SELECT k1 FROM test_query_db.test) a ORDER BY k1

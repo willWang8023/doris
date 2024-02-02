@@ -20,7 +20,6 @@ package org.apache.doris.analysis;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.ScalarType;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
@@ -60,11 +59,9 @@ public class ShowSmallFilesStmt extends ShowStmt {
             if (Strings.isNullOrEmpty(dbName)) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
             }
-        } else {
-            dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
         }
 
-        if (!Env.getCurrentEnv().getAuth().checkDbPriv(ConnectContext.get(), dbName, PrivPredicate.SHOW)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkDbPriv(ConnectContext.get(), dbName, PrivPredicate.SHOW)) {
             ErrorReport.reportAnalysisException(
                     ErrorCode.ERR_DBACCESS_DENIED_ERROR, ConnectContext.get().getQualifiedUser(), dbName);
         }

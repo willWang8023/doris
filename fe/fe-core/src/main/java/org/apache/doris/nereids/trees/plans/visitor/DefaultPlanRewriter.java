@@ -18,9 +18,10 @@
 package org.apache.doris.nereids.trees.plans.visitor;
 
 import org.apache.doris.nereids.trees.plans.Plan;
+import org.apache.doris.nereids.trees.plans.physical.PhysicalOlapScan;
+import org.apache.doris.nereids.trees.plans.physical.PhysicalStorageLayerAggregate;
 
-import java.util.ArrayList;
-import java.util.List;
+import com.google.common.collect.ImmutableList;
 
 /**
  * Default implementation for plan rewriting, delegating to child plans and rewrite current root
@@ -30,15 +31,31 @@ public abstract class DefaultPlanRewriter<C> extends PlanVisitor<Plan, C> {
 
     @Override
     public Plan visit(Plan plan, C context) {
-        List<Plan> newChildren = new ArrayList<>();
+        return visitChildren(this, plan, context);
+    }
+
+    @Override
+    public Plan visitPhysicalStorageLayerAggregate(PhysicalStorageLayerAggregate storageLayerAggregate, C context) {
+        if (storageLayerAggregate.getRelation() instanceof PhysicalOlapScan) {
+            PhysicalOlapScan olapScan = (PhysicalOlapScan) storageLayerAggregate.getRelation().accept(this, context);
+            if (olapScan != storageLayerAggregate.getRelation()) {
+                return storageLayerAggregate.withPhysicalOlapScan(olapScan);
+            }
+        }
+        return storageLayerAggregate;
+    }
+
+    /** visitChildren */
+    public static <P extends Plan, C> P visitChildren(DefaultPlanRewriter<C> rewriter, P plan, C context) {
+        ImmutableList.Builder<Plan> newChildren = ImmutableList.builderWithExpectedSize(plan.arity());
         boolean hasNewChildren = false;
         for (Plan child : plan.children()) {
-            Plan newChild = child.accept(this, context);
+            Plan newChild = child.accept(rewriter, context);
             if (newChild != child) {
                 hasNewChildren = true;
             }
             newChildren.add(newChild);
         }
-        return hasNewChildren ? plan.withChildren(newChildren) : plan;
+        return hasNewChildren ? (P) plan.withChildren(newChildren.build()) : plan;
     }
 }

@@ -21,7 +21,9 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
+#include "common/exception.h"
 #include "olap/olap_common.h"
 
 namespace doris {

@@ -21,7 +21,7 @@ suite("test_subquery_with_agg") {
     """
     
     sql """
-        CREATE TABLE agg_subquery_table
+        CREATE TABLE IF NOT EXISTS agg_subquery_table
         (
             gid       varchar(50)  NOT NULL,
             num       int(11) SUM NOT NULL DEFAULT "0",
@@ -61,6 +61,21 @@ suite("test_subquery_with_agg") {
         )
         order by
         subq_1.gid;
+    """
+
+    qt_select2 """
+    select
+        0 as row_number,
+        round(sum(num) / 10, 0) as org_id
+    from
+    (
+        select
+            num
+        from
+            agg_subquery_table
+    ) t
+    group by
+        1;
     """
 
     sql """

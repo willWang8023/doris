@@ -20,18 +20,21 @@
 
 #pragma once
 
+#include <gen_cpp/Types_types.h>
+#include <gen_cpp/types.pb.h>
+#include <glog/logging.h>
+
+#include <iosfwd>
 #include <string>
 #include <vector>
 
 #include "common/config.h"
-#include "runtime/primitive_type.h"
+#include "common/consts.h"
+#include "runtime/define_primitive_type.h"
 
 namespace doris {
 
 extern const int HLL_COLUMN_DEFAULT_LEN;
-
-struct TPrimitiveType;
-class PTypeDesc;
 
 // Describes a type. Includes the enum, children types, and any type-specific metadata
 // (e.g. precision and scale for decimals).
@@ -40,7 +43,7 @@ struct TypeDescriptor {
     PrimitiveType type;
     /// Only set if type == TYPE_CHAR or type == TYPE_VARCHAR
     int len;
-    static constexpr int MAX_VARCHAR_LENGTH = OLAP_VARCHAR_MAX_LENGTH;
+    static constexpr int MAX_VARCHAR_LENGTH = 65535;
     static constexpr int MAX_CHAR_LENGTH = 255;
     static constexpr int MAX_CHAR_INLINE_LENGTH = 128;
 
@@ -48,23 +51,18 @@ struct TypeDescriptor {
     int precision;
     int scale;
 
-    /// Must be kept in sync with FE's max precision/scale.
-    static constexpr int MAX_PRECISION = 38;
-    static constexpr int MAX_SCALE = MAX_PRECISION;
-
-    /// The maximum precision representable by a 4-byte decimal (Decimal4Value)
-    static constexpr int MAX_DECIMAL4_PRECISION = 9;
-    /// The maximum precision representable by a 8-byte decimal (Decimal8Value)
-    static constexpr int MAX_DECIMAL8_PRECISION = 18;
-
-    // Empty for scalar types
     std::vector<TypeDescriptor> children;
+
+    bool result_is_nullable = false;
+
+    std::string function_name;
 
     // Only set if type == TYPE_STRUCT. The field name of each child.
     std::vector<std::string> field_names;
 
     // Used for complex types only.
-    bool contains_null = true;
+    // Whether subtypes of a complex type is nullable
+    std::vector<bool> contains_nulls;
 
     TypeDescriptor() : type(INVALID_TYPE), len(-1), precision(-1), scale(-1) {}
 
@@ -73,6 +71,9 @@ struct TypeDescriptor {
         if (type == TYPE_DECIMALV2) {
             precision = 27;
             scale = 9;
+        } else if (type == TYPE_DATETIMEV2) {
+            precision = 18;
+            scale = 6;
         }
     }
 
@@ -109,8 +110,8 @@ struct TypeDescriptor {
     }
 
     static TypeDescriptor create_decimalv2_type(int precision, int scale) {
-        DCHECK_LE(precision, MAX_PRECISION);
-        DCHECK_LE(scale, MAX_SCALE);
+        DCHECK_LE(precision, BeConsts::MAX_DECIMALV2_PRECISION);
+        DCHECK_LE(scale, BeConsts::MAX_DECIMALV2_SCALE);
         DCHECK_GE(precision, 0);
         DCHECK_LE(scale, precision);
         TypeDescriptor ret;
@@ -120,10 +121,41 @@ struct TypeDescriptor {
         return ret;
     }
 
+    static TypeDescriptor create_decimalv3_type(int precision, int scale) {
+        DCHECK_LE(precision, BeConsts::MAX_DECIMALV3_PRECISION);
+        DCHECK_LE(scale, BeConsts::MAX_DECIMALV3_SCALE);
+        DCHECK_GE(precision, 0);
+        DCHECK_LE(scale, precision);
+        TypeDescriptor ret;
+        if (precision <= BeConsts::MAX_DECIMAL32_PRECISION) {
+            ret.type = TYPE_DECIMAL32;
+        } else if (precision <= BeConsts::MAX_DECIMAL64_PRECISION) {
+            ret.type = TYPE_DECIMAL64;
+        } else if (precision <= BeConsts::MAX_DECIMAL128_PRECISION) {
+            ret.type = TYPE_DECIMAL128I;
+        } else {
+            ret.type = TYPE_DECIMAL256;
+        }
+        ret.precision = precision;
+        ret.scale = scale;
+        return ret;
+    }
+
     static TypeDescriptor from_thrift(const TTypeDesc& t) {
         int idx = 0;
         TypeDescriptor result(t.types, &idx);
         DCHECK_EQ(idx, t.types.size() - 1);
+        if (result.type == TYPE_AGG_STATE) {
+            DCHECK(t.__isset.sub_types);
+            for (auto sub : t.sub_types) {
+                result.children.push_back(from_thrift(sub));
+                result.contains_nulls.push_back(sub.is_nullable);
+            }
+            DCHECK(t.__isset.result_is_nullable);
+            result.result_is_nullable = t.result_is_nullable;
+            DCHECK(t.__isset.function_name);
+            result.function_name = t.function_name;
+        }
         return result;
     }
 
@@ -160,6 +192,11 @@ struct TypeDescriptor {
 
     void to_protobuf(PTypeDesc* ptype) const;
 
+    bool is_integer_type() const {
+        return type == TYPE_TINYINT || type == TYPE_SMALLINT || type == TYPE_INT ||
+               type == TYPE_BIGINT;
+    }
+
     bool is_string_type() const {
         return type == TYPE_VARCHAR || type == TYPE_CHAR || type == TYPE_HLL ||
                type == TYPE_OBJECT || type == TYPE_QUANTILE_STATE || type == TYPE_STRING;
@@ -170,7 +207,12 @@ struct TypeDescriptor {
     bool is_date_v2_type() const { return type == TYPE_DATEV2; }
     bool is_datetime_v2_type() const { return type == TYPE_DATETIMEV2; }
 
-    bool is_decimal_type() const { return (type == TYPE_DECIMALV2); }
+    bool is_decimal_v2_type() const { return type == TYPE_DECIMALV2; }
+
+    bool is_decimal_v3_type() const {
+        return (type == TYPE_DECIMAL32) || (type == TYPE_DECIMAL64) || (type == TYPE_DECIMAL128I) ||
+               (type == TYPE_DECIMAL256);
+    }
 
     bool is_datetime_type() const { return type == TYPE_DATETIME; }
 
@@ -187,23 +229,35 @@ struct TypeDescriptor {
 
     bool is_array_type() const { return type == TYPE_ARRAY; }
 
-    /// Returns the byte size of this type.  Returns 0 for variable length types.
-    int get_byte_size() const { return ::doris::get_byte_size(type); }
+    bool is_hll_type() const { return type == TYPE_HLL; }
 
-    int get_slot_size() const { return ::doris::get_slot_size(type); }
+    bool is_bitmap_type() const { return type == TYPE_OBJECT; }
+
+    bool is_variant_type() const { return type == TYPE_VARIANT; }
+
+    bool is_json_type() const { return type == TYPE_JSONB; }
 
     static inline int get_decimal_byte_size(int precision) {
         DCHECK_GT(precision, 0);
-        if (precision <= MAX_DECIMAL4_PRECISION) {
+        if (precision <= BeConsts::MAX_DECIMAL32_PRECISION) {
             return 4;
         }
-        if (precision <= MAX_DECIMAL8_PRECISION) {
+        if (precision <= BeConsts::MAX_DECIMAL64_PRECISION) {
             return 8;
         }
-        return 16;
+        if (precision <= BeConsts::MAX_DECIMAL128_PRECISION) {
+            return 16;
+        }
+        return 32;
     }
 
     std::string debug_string() const;
+
+    // use to array type and map type add sub type
+    void add_sub_type(TypeDescriptor sub_type, bool is_nullable = true);
+
+    // use to struct type add sub type
+    void add_sub_type(TypeDescriptor sub_type, std::string field_name, bool is_nullable = true);
 
 private:
     /// Used to create a possibly nested type from the flattened Thrift representation.

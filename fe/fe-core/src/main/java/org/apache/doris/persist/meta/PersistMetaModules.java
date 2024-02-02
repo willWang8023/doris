@@ -35,10 +35,16 @@ public class PersistMetaModules {
     public static final List<MetaPersistMethod> MODULES_IN_ORDER;
 
     public static final ImmutableList<String> MODULE_NAMES = ImmutableList.of(
-            "masterInfo", "frontends", "backends", "datasource", "db", "loadJob", "alterJob", "recycleBin",
+            "masterInfo", "frontends", "backends", "datasource", "db", "alterJob", "recycleBin",
             "globalVariable", "cluster", "broker", "resources", "exportJob", "syncJob", "backupHandler",
             "paloAuth", "transactionState", "colocateTableIndex", "routineLoadJobs", "loadJobV2", "smallFiles",
-            "plugins", "deleteHandler", "sqlBlockRule", "policy");
+            "plugins", "deleteHandler", "sqlBlockRule", "policy", "globalFunction", "workloadGroups",
+            "binlogs", "resourceGroups", "AnalysisMgrV2", "AsyncJobManager", "workloadSchedPolicy",
+            "insertOverwrite");
+
+    // Modules in this list is deprecated and will not be saved in meta file. (also should not be in MODULE_NAMES)
+    public static final ImmutableList<String> DEPRECATED_MODULE_NAMES = ImmutableList.of(
+            "loadJob", "cooldownJob", "AnalysisMgr", "mtmvJobManager", "JobTaskManager");
 
     static {
         MODULES_MAP = Maps.newHashMap();

@@ -27,11 +27,9 @@ import org.apache.doris.common.UserException;
 import org.apache.doris.common.io.Writable;
 import org.apache.doris.load.DppConfig;
 import org.apache.doris.resource.Tag;
-import org.apache.doris.thrift.TAgentServiceVersion;
-import org.apache.doris.thrift.TFetchResourceResult;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -40,6 +38,7 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -52,66 +51,19 @@ public class UserPropertyMgr implements Writable {
     public static final String LDAP_RESOURCE_USER = "ldap";
 
     private static final UserProperty LDAP_PROPERTY = new UserProperty(LDAP_RESOURCE_USER);
-
-    static {
-        try {
-            setNormalUserDefaultResource(LDAP_PROPERTY);
-        } catch (DdlException e) {
-            LOG.error("init DEFAULT_PROPERTY error.", e);
-            throw new RuntimeException(e);
-        }
-    }
-
     private AtomicLong resourceVersion = new AtomicLong(0);
 
     public UserPropertyMgr() {
     }
 
-    public void addUserResource(String qualifiedUser, boolean isSystemUser) {
+    public void addUserResource(String qualifiedUser) {
         UserProperty property = propertyMap.get(qualifiedUser);
         if (property != null) {
             return;
         }
 
         property = new UserProperty(qualifiedUser);
-
-        // set user properties
-        try {
-            if (isSystemUser) {
-                setSystemUserDefaultResource(property);
-            } else {
-                setNormalUserDefaultResource(property);
-            }
-        } catch (DdlException e) {
-            // this should not happen, because the value is set by us!!
-        }
-
         propertyMap.put(qualifiedUser, property);
-        resourceVersion.incrementAndGet();
-    }
-
-    public void setPasswordForDomain(UserIdentity userIdentity, byte[] password, boolean errOnExist,
-            boolean errOnNonExist) throws DdlException {
-        Preconditions.checkArgument(userIdentity.isDomain());
-        UserProperty property = propertyMap.get(userIdentity.getQualifiedUser());
-        if (property == null) {
-            if (errOnNonExist) {
-                throw new DdlException("user " + userIdentity + " does not exist");
-            }
-            property = new UserProperty(userIdentity.getQualifiedUser());
-        }
-        property.setPasswordForDomain(userIdentity.getHost(), password, errOnExist);
-        // update propertyMap after setPasswordForDomain, cause setPasswordForDomain may throw exception
-        propertyMap.put(userIdentity.getQualifiedUser(), property);
-    }
-
-    public void removeDomainFromUser(UserIdentity userIdentity) {
-        Preconditions.checkArgument(userIdentity.isDomain());
-        UserProperty userProperty = propertyMap.get(userIdentity.getQualifiedUser());
-        if (userProperty == null) {
-            return;
-        }
-        userProperty.removeDomain(userIdentity.getHost());
         resourceVersion.incrementAndGet();
     }
 
@@ -121,13 +73,32 @@ public class UserPropertyMgr implements Writable {
         }
     }
 
-    public void updateUserProperty(String user, List<Pair<String, String>> properties) throws UserException {
+    public void updateUserProperty(String user, List<Pair<String, String>> properties, boolean isReplay)
+            throws UserException {
         UserProperty property = propertyMap.get(user);
         if (property == null) {
             throw new DdlException("Unknown user(" + user + ")");
         }
 
-        property.update(properties);
+        property.update(properties, isReplay);
+    }
+
+    public int getQueryTimeout(String qualifiedUser) {
+        UserProperty existProperty = propertyMap.get(qualifiedUser);
+        existProperty = getLdapPropertyIfNull(qualifiedUser, existProperty);
+        if (existProperty == null) {
+            return 0;
+        }
+        return existProperty.getQueryTimeout();
+    }
+
+    public int getInsertTimeout(String qualifiedUser) {
+        UserProperty existProperty = propertyMap.get(qualifiedUser);
+        existProperty = getLdapPropertyIfNull(qualifiedUser, existProperty);
+        if (existProperty == null) {
+            return 0;
+        }
+        return existProperty.getInsertTimeout();
     }
 
     public long getMaxConn(String qualifiedUser) {
@@ -148,49 +119,30 @@ public class UserPropertyMgr implements Writable {
         return existProperty.getMaxQueryInstances();
     }
 
+    public int getParallelFragmentExecInstanceNum(String qualifiedUser) {
+        UserProperty existProperty = propertyMap.get(qualifiedUser);
+        existProperty = getLdapPropertyIfNull(qualifiedUser, existProperty);
+        if (existProperty == null) {
+            return -1;
+        }
+        return existProperty.getParallelFragmentExecInstanceNum();
+    }
+
     public Set<Tag> getResourceTags(String qualifiedUser) {
         UserProperty existProperty = propertyMap.get(qualifiedUser);
         existProperty = getLdapPropertyIfNull(qualifiedUser, existProperty);
         if (existProperty == null) {
             return UserProperty.INVALID_RESOURCE_TAGS;
         }
-        return existProperty.getCopiedResourceTags();
-    }
-
-    public int getPropertyMapSize() {
-        return propertyMap.size();
-    }
-
-    private void setSystemUserDefaultResource(UserProperty user) throws DdlException {
-        UserResource userResource = user.getResource();
-        userResource.updateResource("CPU_SHARE", 100);
-        userResource.updateResource("IO_SHARE", 100);
-        userResource.updateResource("SSD_READ_MBPS", 30);
-        userResource.updateResource("SSD_WRITE_MBPS", 30);
-        userResource.updateResource("HDD_READ_MBPS", 30);
-        userResource.updateResource("HDD_WRITE_MBPS", 30);
-    }
-
-    private static void setNormalUserDefaultResource(UserProperty user) throws DdlException {
-        UserResource userResource = user.getResource();
-        userResource.updateResource("CPU_SHARE", 1000);
-        userResource.updateResource("IO_SHARE", 1000);
-        userResource.updateResource("SSD_READ_IOPS", 1000);
-        userResource.updateResource("HDD_READ_IOPS", 80);
-        userResource.updateResource("SSD_READ_MBPS", 30);
-        userResource.updateResource("HDD_READ_MBPS", 30);
-    }
-
-    public TFetchResourceResult toResourceThrift() {
-        TFetchResourceResult tResult = new TFetchResourceResult();
-        tResult.setProtocolVersion(TAgentServiceVersion.V1);
-        tResult.setResourceVersion(resourceVersion.get());
-
-        for (Map.Entry<String, UserProperty> entry : propertyMap.entrySet()) {
-            tResult.putToResourceByUser(entry.getKey(), entry.getValue().getResource().toThrift());
+        Set<Tag> tags = existProperty.getCopiedResourceTags();
+        // only root and admin can return empty tag.
+        // empty tag means user can access all backends.
+        // for normal user, if tag is empty, use default tag.
+        if (tags.isEmpty() && !(qualifiedUser.equalsIgnoreCase(Auth.ROOT_USER)
+                || qualifiedUser.equalsIgnoreCase(Auth.ADMIN_USER))) {
+            tags = Sets.newHashSet(Tag.DEFAULT_BACKEND_TAG);
         }
-
-        return tResult;
+        return tags;
     }
 
     public Pair<String, DppConfig> getLoadClusterInfo(String qualifiedUser, String cluster) throws DdlException {
@@ -214,44 +166,11 @@ public class UserPropertyMgr implements Writable {
         return property.fetchProperty();
     }
 
-    // return a map from domain name -> set of user names
-    public void getAllDomains(Set<String> allDomains) {
-        LOG.debug("get property map: {}", propertyMap);
-        for (Map.Entry<String, UserProperty> entry : propertyMap.entrySet()) {
-            Set<String> domains = entry.getValue().getWhiteList().getAllDomains();
-            allDomains.addAll(domains);
-        }
-    }
-
-    // check if specified user identity has password
-    public boolean doesUserHasPassword(UserIdentity userIdent) {
-        Preconditions.checkState(userIdent.isDomain());
-        if (!propertyMap.containsKey(userIdent.getQualifiedUser())) {
-            return false;
-        }
-        return propertyMap.get(userIdent.getQualifiedUser()).getWhiteList().hasPassword(userIdent.getHost());
-    }
-
-    public boolean doesUserExist(UserIdentity userIdent) {
-        Preconditions.checkState(userIdent.isDomain());
-        if (!propertyMap.containsKey(userIdent.getQualifiedUser())) {
-            return false;
-        }
-        return propertyMap.get(userIdent.getQualifiedUser()).getWhiteList().containsDomain(userIdent.getHost());
-    }
-
-    public void addUserPrivEntriesByResolvedIPs(Map<String, Set<String>> resolvedIPsMap) {
-        for (UserProperty userProperty : propertyMap.values()) {
-            userProperty.getWhiteList()
-                    .addUserPrivEntriesByResolvedIPs(userProperty.getQualifiedUser(), resolvedIPsMap);
-        }
-    }
-
     public String[] getSqlBlockRules(String qualifiedUser) {
         UserProperty existProperty = propertyMap.get(qualifiedUser);
         existProperty = getLdapPropertyIfNull(qualifiedUser, existProperty);
         if (existProperty == null) {
-            return new String[]{};
+            return new String[] {};
         }
         return existProperty.getSqlBlockRules();
     }
@@ -274,13 +193,22 @@ public class UserPropertyMgr implements Writable {
         return existProperty.getExecMemLimit();
     }
 
-    public long getLoadMemLimit(String qualifiedUser) {
+    public String getWorkloadGroup(String qualifiedUser) {
         UserProperty existProperty = propertyMap.get(qualifiedUser);
         existProperty = getLdapPropertyIfNull(qualifiedUser, existProperty);
         if (existProperty == null) {
-            return -1;
+            return null;
         }
-        return existProperty.getLoadMemLimit();
+        return existProperty.getWorkloadGroup();
+    }
+
+    public Pair<Boolean, String> isWorkloadGroupInUse(String groupName) {
+        for (Entry<String, UserProperty> entry : propertyMap.entrySet()) {
+            if (entry.getValue().getWorkloadGroup().equals(groupName)) {
+                return Pair.of(true, entry.getKey());
+            }
+        }
+        return Pair.of(false, "");
     }
 
     private UserProperty getLdapPropertyIfNull(String qualifiedUser, UserProperty existProperty) {

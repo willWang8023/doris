@@ -19,24 +19,24 @@ github:
   description: Apache Doris is an easy-to-use, high performance and unified analytics database. 
   homepage: https://doris.apache.org
   labels:
-    - data-warehousing
-    - mpp
-    - olap
-    - dbms
-    - database
-    - sql
-    - big-data
     - real-time
-    - analytics
-    - distributed-database
+    - query-engine
+    - olap
+    - lakehouse
+    - etl
+    - elt
+    - sql
+    - snowflake
+    - redshift
+    - bigquery
+    - hive
     - iceberg
     - hudi
-    - datalake
-    - hive
+    - delta-lake
+    - spark
     - hadoop
-    - tpch
-    - ssb
-    - vectorized
+    - dbt
+    - database
 
   enabled_merge_buttons:
     squash:  true
@@ -44,6 +44,42 @@ github:
     rebase:  false
   protected_branches:
     master:
+      required_status_checks:
+        # if strict is true, means "Require branches to be up to date before merging".
+        strict: false
+        contexts:
+          - License Check
+          - Clang Formatter
+          - CheckStyle
+          - P0 Regression (Doris Regression)
+          - P0 Regression PipelineX (Doris Regression)
+          - P1 Regression (Doris Regression)
+          - External Regression (Doris External Regression)
+          - FE UT (Doris FE UT)
+          - BE UT (Doris BE UT)
+          - Build Broker
+          - Build Documents
+          - ShellCheck          
+          - Build Third Party Libraries (Linux)
+          - Build Third Party Libraries (macOS)
+          - COMPILE (DORIS_COMPILE)
+          - Need_2_Approval
+
+      required_pull_request_reviews:
+        dismiss_stale_reviews: true
+        required_approving_review_count: 1
+    branch-1.1-lts:
+      required_status_checks:
+        # if strict is true, means "Require branches to be up to date before merging".
+        strict: false
+        contexts:
+          - License Check
+
+      required_pull_request_reviews:
+        dismiss_stale_reviews: true
+        required_approving_review_count: 1
+
+    branch-2.0:
       required_status_checks:
       # if strict is true, means "Require branches to be up to date before merging".
         strict: false
@@ -53,25 +89,32 @@ github:
           - CheckStyle
           - P0 Regression (Doris Regression)
           - P1 Regression (Doris Regression)
+          - External Regression (Doris External Regression)
           - FE UT (Doris FE UT)
           - BE UT (Doris BE UT)
           - Build Broker
+          - ShellCheck
           - Build Documents
-          - BE UT (Clang)
+          - Build Third Party Libraries (Linux)
+          - Build Third Party Libraries (macOS)
+          - COMPILE (DORIS_COMPILE)
 
-      required_pull_request_reviews:
-        dismiss_stale_reviews: true
-        required_approving_review_count: 1
+        required_pull_request_reviews:
+          dismiss_stale_reviews: true
+          required_approving_review_count: 1
+
   collaborators:
-    - jackwener
-    - tinkerrrr
-    - luzhijing
-    - spaces-X
-    - zuochunwei
-    - thomascai126
-    - dataroaring
-    - morrySnow
-    - dataalive
+    - LemonLiTree
+    - Yukang-Lian
+    - TangSiyang2001
+    - Lchangliang
+    - freemandealer
+    - shuke987
+    - wm1581066
+    - KassieZ
+    - yujun777
+    - gavinchou
 
 notifications:
     pullrequests_status:  commits@doris.apache.org
+

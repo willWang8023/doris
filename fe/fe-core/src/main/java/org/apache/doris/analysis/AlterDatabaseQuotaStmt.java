@@ -18,10 +18,10 @@
 package org.apache.doris.analysis;
 
 import org.apache.doris.catalog.Env;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
+import org.apache.doris.common.util.InternalDatabaseUtil;
 import org.apache.doris.common.util.ParseUtil;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
@@ -37,7 +37,8 @@ public class AlterDatabaseQuotaStmt extends DdlStmt {
     public enum QuotaType {
         NONE,
         DATA,
-        REPLICA
+        REPLICA,
+        TRANSACTION
     }
 
     public AlterDatabaseQuotaStmt(String dbName, QuotaType quotaType, String quotaValue) {
@@ -61,8 +62,8 @@ public class AlterDatabaseQuotaStmt extends DdlStmt {
     @Override
     public void analyze(Analyzer analyzer) throws UserException {
         super.analyze(analyzer);
-
-        if (!Env.getCurrentEnv().getAuth().checkGlobalPriv(ConnectContext.get(), PrivPredicate.ADMIN)) {
+        InternalDatabaseUtil.checkDatabase(dbName, ConnectContext.get());
+        if (!Env.getCurrentEnv().getAccessManager().checkGlobalPriv(ConnectContext.get(), PrivPredicate.ADMIN)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_DBACCESS_DENIED_ERROR,
                     analyzer.getQualifiedUser(), dbName);
         }
@@ -70,19 +71,19 @@ public class AlterDatabaseQuotaStmt extends DdlStmt {
         if (Strings.isNullOrEmpty(dbName)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
         }
-        dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
         if (quotaType == QuotaType.DATA) {
             quota = ParseUtil.analyzeDataVolumn(quotaValue);
         } else if (quotaType == QuotaType.REPLICA) {
             quota = ParseUtil.analyzeReplicaNumber(quotaValue);
+        } else if (quotaType == QuotaType.TRANSACTION) {
+            quota = ParseUtil.analyzeTransactionNumber(quotaValue);
         }
-
     }
 
     @Override
     public String toSql() {
         return "ALTER DATABASE " + dbName + " SET "
-                + (quotaType == QuotaType.DATA ? "DATA" : "REPLICA")
+                + quotaType.name()
                 + " QUOTA " + quotaValue;
     }
 }

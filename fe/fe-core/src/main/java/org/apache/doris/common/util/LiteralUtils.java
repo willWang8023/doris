@@ -23,7 +23,7 @@ import org.apache.doris.analysis.FloatLiteral;
 import org.apache.doris.analysis.StringLiteral;
 import org.apache.doris.catalog.Type;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -38,7 +38,7 @@ public class LiteralUtils {
             String timeStr = literal.getStringValue();
             return timeStr.substring(1, timeStr.length() - 1);
         } else {
-            return BigDecimal.valueOf(literal.getValue()).stripTrailingZeros().toPlainString();
+            return BigDecimal.valueOf(literal.getValue()).toPlainString();
         }
     }
 
@@ -48,9 +48,9 @@ public class LiteralUtils {
             if (v instanceof FloatLiteral) {
                 list.add(getStringValue((FloatLiteral) v));
             } else if (v instanceof DecimalLiteral) {
-                list.add(((DecimalLiteral) v).getValue().stripTrailingZeros().toPlainString());
+                list.add(((DecimalLiteral) v).getValue().toPlainString());
             } else if (v instanceof StringLiteral) {
-                list.add("'" + v.getStringValue() + "'");
+                list.add("\"" + v.getStringValue() + "\"");
             } else if (v instanceof ArrayLiteral) {
                 list.add(getStringValue((ArrayLiteral) v));
             } else {

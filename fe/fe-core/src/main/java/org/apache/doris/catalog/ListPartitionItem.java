@@ -17,6 +17,9 @@
 
 package org.apache.doris.catalog;
 
+import org.apache.doris.analysis.PartitionKeyDesc;
+import org.apache.doris.analysis.PartitionValue;
+
 import com.google.common.collect.Lists;
 
 import java.io.DataInput;
@@ -24,11 +27,13 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class ListPartitionItem extends PartitionItem {
     public static ListPartitionItem DUMMY_ITEM = new ListPartitionItem(Lists.newArrayList());
 
     private final List<PartitionKey> partitionKeys;
+    private boolean isDefaultPartition = false;
 
     public ListPartitionItem(List<PartitionKey> partitionKeys) {
         this.partitionKeys = partitionKeys;
@@ -49,6 +54,15 @@ public class ListPartitionItem extends PartitionItem {
     }
 
     @Override
+    public boolean isDefaultPartition() {
+        return isDefaultPartition;
+    }
+
+    public void setDefaultPartition(boolean isDefaultPartition) {
+        this.isDefaultPartition = isDefaultPartition;
+    }
+
+    @Override
     public PartitionItem getIntersect(PartitionItem newItem) {
         List<PartitionKey> newKeys = newItem.getItems();
         for (PartitionKey newKey : newKeys) {
@@ -57,6 +71,13 @@ public class ListPartitionItem extends PartitionItem {
             }
         }
         return null;
+    }
+
+    @Override
+    public PartitionKeyDesc toPartitionKeyDesc() {
+        List<List<PartitionValue>> inValues = partitionKeys.stream().map(PartitionInfo::toPartitionValue)
+                .collect(Collectors.toList());
+        return PartitionKeyDesc.createIn(inValues);
     }
 
     @Override
@@ -139,5 +160,16 @@ public class ListPartitionItem extends PartitionItem {
         }
 
         return sb.toString();
+    }
+
+    // If any partition key is hive default partition, return true.
+    // Only used for hive table.
+    public boolean isHiveDefaultPartition() {
+        for (PartitionKey partitionKey : partitionKeys) {
+            if (partitionKey.isHiveDefaultPartition()) {
+                return true;
+            }
+        }
+        return false;
     }
 }

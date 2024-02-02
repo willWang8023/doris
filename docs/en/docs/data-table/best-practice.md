@@ -51,9 +51,9 @@ AGGREGATE KEY(siteid, city, username)
 DISTRIBUTED BY HASH(siteid) BUCKETS 10;
 ```
 
-1.1.2. KEY UNIQUE
+1.1.2. UNIQUE KEY
 
-When UNIQUE KEY is the same, the new record covers the old record. At present, UNIQUE KEY implements the same REPLACE aggregation method as AGGREGATE KEY, and they are essentially the same. Suitable for analytical business with updated requirements.
+When UNIQUE KEY is the same, the new record covers the old record. Before version 1.2, UNIQUE KEY implements the same REPLACE aggregation method as AGGREGATE KEY, and they are essentially the same. We introduced a new merge-on-write implementation for UNIQUE KEY since version 1.2, which have better performance on many scenarios. Suitable for analytical business with updated requirements.
 
 ```
 CREATE TABLE sales_order
@@ -164,10 +164,10 @@ Database Session
 session -u data (visitorid, sessionid, visittime, city, province, ip, browser, url)
 ```
 
-In addition to visitorid analysis, there are Brower and province analysis cases, Rollup can be established separately.
+In addition to visitorid analysis, there are browser and province analysis cases, Rollup can be established separately.
 
 ```
-ALTER TABLE session_data ADD ROLLUP rollup_brower(brower,province,ip,url) DUPLICATE KEY(brower,province);
+ALTER TABLE session_data ADD ROLLUP rollup_browser(browser,province,ip,url) DUPLICATE KEY(browser,province);
 ```
 
 ## Schema Change
@@ -180,4 +180,4 @@ Users can modify the Schema of an existing table through the Schema Change opera
 - Adding or modifying Bloom Filter
 - Adding or removing bitmap index
 
-For details, please refer to [Schema Change](
+For details, please refer to [Schema Change](../advanced/alter-table/schema-change.md)

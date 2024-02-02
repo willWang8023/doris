@@ -34,14 +34,13 @@ import org.apache.doris.common.UserException;
 import org.apache.doris.common.util.DebugUtil;
 import org.apache.doris.load.BrokerFileGroup;
 import org.apache.doris.mysql.privilege.PrivPredicate;
-import org.apache.doris.planner.BrokerScanNode;
 import org.apache.doris.planner.DataPartition;
+import org.apache.doris.planner.FileLoadScanNode;
 import org.apache.doris.planner.OlapTableSink;
 import org.apache.doris.planner.PlanFragment;
 import org.apache.doris.planner.PlanFragmentId;
 import org.apache.doris.planner.PlanNodeId;
 import org.apache.doris.planner.ScanNode;
-import org.apache.doris.planner.external.ExternalFileScanNode;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.thrift.TBrokerFileStatus;
 import org.apache.doris.thrift.TUniqueId;
@@ -52,6 +51,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -66,9 +66,12 @@ public class LoadingTaskPlanner {
     private final BrokerDesc brokerDesc;
     private final List<BrokerFileGroup> fileGroups;
     private final boolean strictMode;
+    private final boolean isPartialUpdate;
     private final long timeoutS;    // timeout of load job, in second
     private final int loadParallelism;
     private final int sendBatchParallelism;
+    private final boolean useNewLoadScanNode;
+    private final boolean singleTabletLoadPerSink;
     private UserIdentity userInfo;
     // Something useful
     // ConnectContext here is just a dummy object to avoid some NPE problem, like ctx.getDatabase()
@@ -82,9 +85,10 @@ public class LoadingTaskPlanner {
     private int nextNodeId = 0;
 
     public LoadingTaskPlanner(Long loadJobId, long txnId, long dbId, OlapTable table,
-                              BrokerDesc brokerDesc, List<BrokerFileGroup> brokerFileGroups,
-                              boolean strictMode, String timezone, long timeoutS, int loadParallelism,
-                              int sendBatchParallelism, UserIdentity userInfo) {
+            BrokerDesc brokerDesc, List<BrokerFileGroup> brokerFileGroups,
+            boolean strictMode, boolean isPartialUpdate, String timezone, long timeoutS, int loadParallelism,
+            int sendBatchParallelism, boolean useNewLoadScanNode, UserIdentity userInfo,
+            boolean singleTabletLoadPerSink) {
         this.loadJobId = loadJobId;
         this.txnId = txnId;
         this.dbId = dbId;
@@ -92,12 +96,15 @@ public class LoadingTaskPlanner {
         this.brokerDesc = brokerDesc;
         this.fileGroups = brokerFileGroups;
         this.strictMode = strictMode;
+        this.isPartialUpdate = isPartialUpdate;
         this.analyzer.setTimezone(timezone);
         this.timeoutS = timeoutS;
         this.loadParallelism = loadParallelism;
         this.sendBatchParallelism = sendBatchParallelism;
+        this.useNewLoadScanNode = useNewLoadScanNode;
+        this.singleTabletLoadPerSink = singleTabletLoadPerSink;
         this.userInfo = userInfo;
-        if (Env.getCurrentEnv().getAuth()
+        if (Env.getCurrentEnv().getAccessManager()
                 .checkDbPriv(userInfo, Env.getCurrentInternalCatalog().getDbNullable(dbId).getFullName(),
                         PrivPredicate.SELECT)) {
             this.analyzer.setUDFAllowed(true);
@@ -111,55 +118,87 @@ public class LoadingTaskPlanner {
         // Generate tuple descriptor
         TupleDescriptor destTupleDesc = descTable.createTupleDescriptor();
         TupleDescriptor scanTupleDesc = destTupleDesc;
-        if (Config.enable_vectorized_load) {
-            scanTupleDesc = descTable.createTupleDescriptor("ScanTuple");
+        scanTupleDesc = descTable.createTupleDescriptor("ScanTuple");
+        if (isPartialUpdate && !table.getEnableUniqueKeyMergeOnWrite()) {
+            throw new UserException("Only unique key merge on write support partial update");
         }
+
+        HashSet<String> partialUpdateInputColumns = new HashSet<>();
+        if (isPartialUpdate) {
+            for (Column col : table.getFullSchema()) {
+                boolean existInExpr = false;
+                for (ImportColumnDesc importColumnDesc : fileGroups.get(0).getColumnExprList()) {
+                    if (importColumnDesc.getColumnName() != null
+                            && importColumnDesc.getColumnName().equals(col.getName())) {
+                        if (!col.isVisible() && !Column.DELETE_SIGN.equals(col.getName())) {
+                            throw new UserException("Partial update should not include invisible column except"
+                                    + " delete sign column: " + col.getName());
+                        }
+                        partialUpdateInputColumns.add(col.getName());
+                        existInExpr = true;
+                        break;
+                    }
+                }
+                if (col.isKey() && !existInExpr) {
+                    throw new UserException("Partial update should include all key columns, missing: " + col.getName());
+                }
+            }
+        }
+
         // use full schema to fill the descriptor table
         for (Column col : table.getFullSchema()) {
+            if (isPartialUpdate && !partialUpdateInputColumns.contains(col.getName())) {
+                continue;
+            }
             SlotDescriptor slotDesc = descTable.addSlotDescriptor(destTupleDesc);
             slotDesc.setIsMaterialized(true);
             slotDesc.setColumn(col);
             slotDesc.setIsNullable(col.isAllowNull());
-            if (Config.enable_vectorized_load) {
-                SlotDescriptor scanSlotDesc = descTable.addSlotDescriptor(scanTupleDesc);
-                scanSlotDesc.setIsMaterialized(true);
-                scanSlotDesc.setColumn(col);
-                scanSlotDesc.setIsNullable(col.isAllowNull());
-                if (fileGroups.size() > 0) {
-                    for (ImportColumnDesc importColumnDesc : fileGroups.get(0).getColumnExprList()) {
-                        try {
-                            if (!importColumnDesc.isColumn() && importColumnDesc.getColumnName() != null
-                                    && importColumnDesc.getColumnName().equals(col.getName())) {
-                                scanSlotDesc.setIsNullable(importColumnDesc.getExpr().isNullable());
-                                break;
-                            }
-                        } catch (Exception e) {
-                            // An exception may be thrown here because the `importColumnDesc.getExpr()` is not analyzed
-                            // now. We just skip this case here.
+            slotDesc.setAutoInc(col.isAutoInc());
+            SlotDescriptor scanSlotDesc = descTable.addSlotDescriptor(scanTupleDesc);
+            scanSlotDesc.setIsMaterialized(true);
+            scanSlotDesc.setColumn(col);
+            scanSlotDesc.setIsNullable(col.isAllowNull());
+            scanSlotDesc.setAutoInc(col.isAutoInc());
+            if (col.isAutoInc()) {
+                // auto-increment column should be non-nullable
+                // however, here we use `NullLiteral` to indicate that a cell should
+                // be filled with generated value in `VOlapTableSink::_fill_auto_inc_cols()`
+                scanSlotDesc.setIsNullable(true);
+            }
+            if (fileGroups.size() > 0) {
+                for (ImportColumnDesc importColumnDesc : fileGroups.get(0).getColumnExprList()) {
+                    try {
+                        if (!importColumnDesc.isColumn() && importColumnDesc.getColumnName() != null
+                                && importColumnDesc.getColumnName().equals(col.getName())) {
+                            scanSlotDesc.setIsNullable(importColumnDesc.getExpr().isNullable());
+                            break;
                         }
+                    } catch (Exception e) {
+                        // An exception may be thrown here because the `importColumnDesc.getExpr()` is not analyzed
+                        // now. We just skip this case here.
                     }
                 }
+            }
+        }
+
+        // analyze expr in whereExpr before rewrite
+        scanTupleDesc.setTable(table);
+        analyzer.registerTupleDescriptor(scanTupleDesc);
+        for (BrokerFileGroup fileGroup : fileGroups) {
+            if (fileGroup.getWhereExpr() != null) {
+                fileGroup.getWhereExpr().analyze(analyzer);
             }
         }
 
         // Generate plan trees
         // 1. Broker scan node
         ScanNode scanNode;
-        if (Config.enable_new_load_scan_node) {
-            scanNode = new ExternalFileScanNode(new PlanNodeId(nextNodeId++), scanTupleDesc, "FileScanNode");
-            ((ExternalFileScanNode) scanNode).setLoadInfo(loadJobId, txnId, table, brokerDesc, fileGroups,
-                    fileStatusesList, filesAdded, strictMode, loadParallelism, userInfo);
-        } else {
-            scanNode = new BrokerScanNode(new PlanNodeId(nextNodeId++), scanTupleDesc, "BrokerScanNode",
-                    fileStatusesList, filesAdded);
-            ((BrokerScanNode) scanNode).setLoadInfo(loadJobId, txnId, table, brokerDesc, fileGroups, strictMode,
-                    loadParallelism, userInfo);
-        }
+        scanNode = new FileLoadScanNode(new PlanNodeId(nextNodeId++), scanTupleDesc);
+        ((FileLoadScanNode) scanNode).setLoadInfo(loadJobId, txnId, table, brokerDesc, fileGroups,
+                fileStatusesList, filesAdded, strictMode, loadParallelism, userInfo);
         scanNode.init(analyzer);
         scanNode.finalize(analyzer);
-        if (Config.enable_vectorized_load) {
-            scanNode.convertToVectoriezd();
-        }
         scanNodes.add(scanNode);
         descTable.computeStatAndMemLayout();
 
@@ -167,8 +206,12 @@ public class LoadingTaskPlanner {
         List<Long> partitionIds = getAllPartitionIds();
         OlapTableSink olapTableSink = new OlapTableSink(table, destTupleDesc, partitionIds,
                 Config.enable_single_replica_load);
-        olapTableSink.init(loadId, txnId, dbId, timeoutS, sendBatchParallelism, false);
-        olapTableSink.complete();
+        long txnTimeout = timeoutS == 0 ? ConnectContext.get().getExecTimeout() : timeoutS;
+        olapTableSink.init(loadId, txnId, dbId, timeoutS, sendBatchParallelism, singleTabletLoadPerSink, strictMode,
+                txnTimeout);
+        olapTableSink.setPartialUpdateInputColumns(isPartialUpdate, partialUpdateInputColumns);
+
+        olapTableSink.complete(analyzer);
 
         // 3. Plan fragment
         PlanFragment sinkFragment = new PlanFragment(new PlanFragmentId(0), scanNode, DataPartition.RANDOM);
@@ -204,6 +247,12 @@ public class LoadingTaskPlanner {
         Set<Long> specifiedPartitionIds = Sets.newHashSet();
         for (BrokerFileGroup brokerFileGroup : fileGroups) {
             if (brokerFileGroup.getPartitionIds() != null) {
+                for (long partitionId : brokerFileGroup.getPartitionIds()) {
+                    if (!table.getPartitionInfo().getIsMutable(partitionId)) {
+                        throw new LoadException("Can't load data to immutable partition, table: "
+                            + table.getName() + ", partition: " + table.getPartition(partitionId));
+                    }
+                }
                 specifiedPartitionIds.addAll(brokerFileGroup.getPartitionIds());
             }
             // all file group in fileGroups should have same partitions, so only need to get partition ids

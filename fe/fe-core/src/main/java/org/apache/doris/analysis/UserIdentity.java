@@ -23,16 +23,20 @@ import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.CaseSensibility;
 import org.apache.doris.common.FeMetaVersion;
 import org.apache.doris.common.FeNameFormat;
-import org.apache.doris.common.PatternMatcher;
+import org.apache.doris.common.PatternMatcherWrapper;
 import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
-import org.apache.doris.mysql.privilege.PaloAuth;
+import org.apache.doris.mysql.privilege.Auth;
+import org.apache.doris.mysql.privilege.RoleManager;
+import org.apache.doris.persist.gson.GsonPostProcessable;
 import org.apache.doris.persist.gson.GsonUtils;
 import org.apache.doris.thrift.TUserIdentity;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.gson.annotations.SerializedName;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -44,14 +48,13 @@ import java.io.IOException;
 // cmy@%
 // cmy@192.168.%
 // cmy@[domain.name]
-public class UserIdentity implements Writable {
+public class UserIdentity implements Writable, GsonPostProcessable {
+    private static final Logger LOG = LogManager.getLogger(UserIdentity.class);
 
     @SerializedName(value = "user")
     private String user;
-
     @SerializedName(value = "host")
     private String host;
-
     @SerializedName(value = "isDomain")
     private boolean isDomain;
 
@@ -62,11 +65,11 @@ public class UserIdentity implements Writable {
     public static final UserIdentity UNKNOWN;
 
     static {
-        ROOT = new UserIdentity(PaloAuth.ROOT_USER, "%");
+        ROOT = new UserIdentity(Auth.ROOT_USER, "%");
         ROOT.setIsAnalyzed();
-        ADMIN = new UserIdentity(PaloAuth.ADMIN_USER, "%");
+        ADMIN = new UserIdentity(Auth.ADMIN_USER, "%");
         ADMIN.setIsAnalyzed();
-        UNKNOWN = new UserIdentity(PaloAuth.UNKNOWN_USER, "%");
+        UNKNOWN = new UserIdentity(Auth.UNKNOWN_USER, "%");
         UNKNOWN.setIsAnalyzed();
     }
 
@@ -121,7 +124,7 @@ public class UserIdentity implements Writable {
         this.isAnalyzed = true;
     }
 
-    public void analyze(String clusterName) throws AnalysisException {
+    public void analyze() throws AnalysisException {
         if (isAnalyzed) {
             return;
         }
@@ -130,10 +133,6 @@ public class UserIdentity implements Writable {
         }
 
         FeNameFormat.checkUserName(user);
-        if (!user.equals(PaloAuth.ROOT_USER) && !user.equals(PaloAuth.ADMIN_USER)) {
-            user = ClusterNamespace.getFullName(clusterName, user);
-        }
-
         if (Strings.isNullOrEmpty(host)) {
             if (!isDomain) {
                 host = "%";
@@ -143,7 +142,7 @@ public class UserIdentity implements Writable {
         }
 
         // reuse createMysqlPattern to validate host pattern
-        PatternMatcher.createMysqlPattern(host, CaseSensibility.HOST.getCaseSensibility());
+        PatternMatcherWrapper.createMysqlPattern(host, CaseSensibility.HOST.getCaseSensibility());
         isAnalyzed = true;
     }
 
@@ -179,11 +178,11 @@ public class UserIdentity implements Writable {
     }
 
     public boolean isRootUser() {
-        return user.equals(PaloAuth.ROOT_USER);
+        return user.equals(Auth.ROOT_USER);
     }
 
     public boolean isAdminUser() {
-        return user.equals(PaloAuth.ADMIN_USER);
+        return user.equals(Auth.ADMIN_USER);
     }
 
     public TUserIdentity toThrift() {
@@ -193,6 +192,25 @@ public class UserIdentity implements Writable {
         tUserIdent.setUsername(user);
         tUserIdent.setIsDomain(isDomain);
         return tUserIdent;
+    }
+
+    // return default_role_rbac_username@host or default_role_rbac_username@[domain]
+    public String toDefaultRoleName() {
+        StringBuilder sb = new StringBuilder(
+                RoleManager.DEFAULT_ROLE_PREFIX + ClusterNamespace.getNameFromFullName(user) + "@");
+        if (isDomain) {
+            sb.append("[");
+        }
+        sb.append(host);
+        if (isDomain) {
+            sb.append("]");
+        }
+        return sb.toString();
+    }
+
+    // should be remove after version 3.0
+    public void removeClusterPrefix() {
+        user = ClusterNamespace.getNameFromFullName(user);
     }
 
     public static UserIdentity read(DataInput in) throws IOException {
@@ -259,5 +277,11 @@ public class UserIdentity implements Writable {
         host = Text.readString(in);
         isDomain = in.readBoolean();
         isAnalyzed = true;
+    }
+
+    @Override
+    public void gsonPostProcess() throws IOException {
+        isAnalyzed = true;
+        removeClusterPrefix();
     }
 }

@@ -22,7 +22,7 @@
 #include <queue>
 #include <utility>
 
-#include "common/compiler_util.h"
+#include "common/compiler_util.h" // IWYU pragma: keep
 
 namespace doris {
 

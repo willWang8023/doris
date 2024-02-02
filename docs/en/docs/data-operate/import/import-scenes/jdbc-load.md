@@ -1,6 +1,6 @@
 ---
 {
-    "title": "Synchronize data using Insert method",
+    "title": "Synchronize Data Using Insert Method",
     "language": "en"
 }
 ---
@@ -24,7 +24,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Synchronize data using Insert method
+# Synchronize Data Using Insert Method
 
 Users can use INSERT statement to import data through MySQL protocol.
 
@@ -160,4 +160,4 @@ Please note the following:
 
    As mentioned earlier, we recommend that when using INSERT to import data, use the "batch" method to import, rather than a single insert.
 
-   At the same time, we can set a Label for each INSERT operation. Through the [Label mechanism](./load-atomicity.html#label-mechanism), the idempotency and atomicity of operations can be guaranteed, and the data will not be lost or heavy in the end. For the specific usage of Label in INSERT, you can refer to the [INSERT](../../../sql-manual/sql-reference/Data-Manipulation-Statements/Manipulation/INSERT.md) document.
+   At the same time, we can set a Label for each INSERT operation. Through the [Label mechanism](./load-atomicity.md), the idempotency and atomicity of operations can be guaranteed, and the data will not be lost or heavy in the end. For the specific usage of Label in INSERT, you can refer to the [INSERT](../../../sql-manual/sql-reference/Data-Manipulation-Statements/Manipulation/INSERT.md) document.

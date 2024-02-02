@@ -20,6 +20,8 @@ package org.apache.doris.analysis;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.ScalarType;
+import org.apache.doris.catalog.TableIf;
+import org.apache.doris.catalog.View;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
@@ -43,17 +45,30 @@ public class ShowCreateTableStmt extends ShowStmt {
                     .addColumn(new Column("collation_connection", ScalarType.createVarchar(30)))
                     .build();
 
+    private static final ShowResultSetMetaData MATERIALIZED_VIEW_META_DATA =
+            ShowResultSetMetaData.builder()
+                    .addColumn(new Column("Materialized View", ScalarType.createVarchar(20)))
+                    .addColumn(new Column("Create Materialized View", ScalarType.createVarchar(30)))
+                    .build();
+
     private TableName tbl;
     private boolean isView;
+    private boolean needBriefDdl;
 
     public ShowCreateTableStmt(TableName tbl) {
-        this(tbl, false);
+        this(tbl, false, false);
     }
 
-    public ShowCreateTableStmt(TableName tbl, boolean isView) {
+    public ShowCreateTableStmt(TableName tbl, boolean needBriefDdl) {
+        this(tbl, false, needBriefDdl);
+    }
+
+    public ShowCreateTableStmt(TableName tbl, boolean isView, boolean needBriefDdl) {
         this.tbl = tbl;
         this.isView = isView;
+        this.needBriefDdl = needBriefDdl;
     }
+
 
     public String getCtl() {
         return tbl.getCtl();
@@ -71,8 +86,16 @@ public class ShowCreateTableStmt extends ShowStmt {
         return isView;
     }
 
+    public boolean isNeedBriefDdl() {
+        return needBriefDdl;
+    }
+
     public static ShowResultSetMetaData getViewMetaData() {
         return VIEW_META_DATA;
+    }
+
+    public static ShowResultSetMetaData getMaterializedViewMetaData() {
+        return MATERIALIZED_VIEW_META_DATA;
     }
 
     @Override
@@ -82,8 +105,19 @@ public class ShowCreateTableStmt extends ShowStmt {
         }
         tbl.analyze(analyzer);
 
-        if (!Env.getCurrentEnv().getAuth().checkTblPriv(ConnectContext.get(), tbl.getDb(), tbl.getTbl(),
-                                                                PrivPredicate.SHOW)) {
+        TableIf tableIf = Env.getCurrentEnv().getCatalogMgr()
+                .getCatalogOrAnalysisException(tbl.getCtl())
+                .getDbOrAnalysisException(tbl.getDb()).getTableOrAnalysisException(tbl.getTbl());
+
+        PrivPredicate wanted;
+        if (tableIf instanceof View) {
+            wanted = PrivPredicate.SHOW_VIEW;
+        } else {
+            wanted = PrivPredicate.SHOW;
+        }
+
+        if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(ConnectContext.get(), tbl.getCtl(), tbl.getDb(),
+                tbl.getTbl(), wanted)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_TABLEACCESS_DENIED_ERROR, "SHOW CREATE TABLE",
                                                 ConnectContext.get().getQualifiedUser(),
                                                 ConnectContext.get().getRemoteIP(),

@@ -17,18 +17,21 @@
 
 #pragma once
 
+#include <gen_cpp/segment_v2.pb.h>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/status.h"
-#include "env/env.h"
-#include "gen_cpp/segment_v2.pb.h"
-#include "io/fs/file_reader.h"
+#include "io/fs/file_reader_writer_fwd.h"
 #include "olap/field.h"
-#include "olap/rowset/segment_v2/binary_plain_page.h"
-#include "runtime/mem_pool.h"
-#include "util/slice.h"
+#include "runtime/define_primitive_type.h"
+#include "util/once.h"
+#include "vec/common/arena.h"
 
 namespace doris {
 
@@ -91,7 +94,6 @@ public:
     virtual uint64_t size() const = 0;
 
     virtual void reset_page_zone_map() = 0;
-    virtual void reset_segment_zone_map() = 0;
 };
 
 // Zone map index is represented by an IndexedColumn with ordinal index.
@@ -117,7 +119,6 @@ public:
     uint64_t size() const override { return _estimated_size; }
 
     void reset_page_zone_map() override;
-    void reset_segment_zone_map() override;
 
 private:
     void _reset_zone_map(ZoneMap* zone_map) {
@@ -129,13 +130,13 @@ private:
         zone_map->pass_all = false;
     }
 
-    Field* _field;
-    // memory will be managed by MemPool
+    Field* _field = nullptr;
+    // memory will be managed by Arena
     ZoneMap _page_zone_map;
     ZoneMap _segment_zone_map;
-    // TODO(zc): we should replace this memory pool later, we only allocate min/max
-    // for field. But MemPool allocate 4KB least, it will a waste for most cases.
-    MemPool _pool;
+    // TODO(zc): we should replace this arena later, we only allocate min/max
+    // for field. But Arena allocate 4KB least, it will a waste for most cases.
+    vectorized::Arena _arena;
 
     // serialized ZoneMapPB for each data page
     std::vector<std::string> _values;
@@ -144,8 +145,11 @@ private:
 
 class ZoneMapIndexReader {
 public:
-    explicit ZoneMapIndexReader(io::FileReaderSPtr file_reader, const ZoneMapIndexPB* index_meta)
-            : _file_reader(std::move(file_reader)), _index_meta(index_meta) {}
+    explicit ZoneMapIndexReader(io::FileReaderSPtr file_reader,
+                                const IndexedColumnMetaPB& page_zone_maps)
+            : _file_reader(std::move(file_reader)) {
+        _page_zone_maps_meta.reset(new IndexedColumnMetaPB(page_zone_maps));
+    }
 
     // load all page zone maps into memory
     Status load(bool use_page_cache, bool kept_in_memory);
@@ -155,9 +159,13 @@ public:
     int32_t num_pages() const { return _page_zone_maps.size(); }
 
 private:
-    io::FileReaderSPtr _file_reader;
-    const ZoneMapIndexPB* _index_meta;
+    Status _load(bool use_page_cache, bool kept_in_memory, std::unique_ptr<IndexedColumnMetaPB>);
 
+private:
+    DorisCallOnce<Status> _load_once;
+    // TODO: yyq, we shoud remove file_reader from here.
+    io::FileReaderSPtr _file_reader;
+    std::unique_ptr<IndexedColumnMetaPB> _page_zone_maps_meta;
     std::vector<ZoneMapPB> _page_zone_maps;
 };
 

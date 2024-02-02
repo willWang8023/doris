@@ -17,9 +17,17 @@
 
 #include "util/key_util.h"
 
-#include <gtest/gtest.h>
+#include <gtest/gtest-message.h>
+#include <gtest/gtest-test-part.h>
 
+#include <algorithm>
+#include <memory>
+#include <vector>
+
+#include "gtest/gtest_pred_impl.h"
 #include "olap/row_cursor.h"
+#include "olap/row_cursor_cell.h"
+#include "olap/tablet_schema.h"
 #include "olap/tablet_schema_helper.h"
 #include "util/debug_util.h"
 
@@ -44,7 +52,7 @@ TEST_F(KeyUtilTest, encode) {
     // test encoding with padding
     {
         RowCursor row;
-        row.init(tablet_schema, 2);
+        static_cast<void>(row.init(tablet_schema, 2));
 
         {
             // test padding

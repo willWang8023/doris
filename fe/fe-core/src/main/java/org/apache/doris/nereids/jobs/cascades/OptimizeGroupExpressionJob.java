@@ -20,13 +20,13 @@ package org.apache.doris.nereids.jobs.cascades;
 import org.apache.doris.nereids.jobs.Job;
 import org.apache.doris.nereids.jobs.JobContext;
 import org.apache.doris.nereids.jobs.JobType;
-import org.apache.doris.nereids.memo.Group;
 import org.apache.doris.nereids.memo.GroupExpression;
-import org.apache.doris.nereids.pattern.Pattern;
 import org.apache.doris.nereids.rules.Rule;
+import org.apache.doris.qe.ConnectContext;
 
-import java.util.ArrayList;
-import java.util.Comparator;
+import com.google.common.collect.ImmutableList;
+
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -42,25 +42,69 @@ public class OptimizeGroupExpressionJob extends Job {
 
     @Override
     public void execute() {
-        List<Rule> validRules = new ArrayList<>();
-        List<Rule> implementationRules = getRuleSet().getImplementationRules();
-        List<Rule> explorationRules = getRuleSet().getExplorationRules();
-        validRules.addAll(getValidRules(groupExpression, explorationRules));
-        validRules.addAll(getValidRules(groupExpression, implementationRules));
-        validRules.sort(Comparator.comparingInt(o -> o.getRulePromise().promise()));
-
-        for (Rule rule : validRules) {
-            pushJob(new ApplyRuleJob(groupExpression, rule, context));
-
-            // If child_pattern has any more children (i.e non-leaf), then we will explore the
-            // child before applying the rule. (assumes task pool is effectively a stack)
-            for (int i = 0; i < rule.getPattern().children().size(); ++i) {
-                Pattern childPattern = rule.getPattern().child(i);
-                if (childPattern.arity() > 0 && !childPattern.isGroup()) {
-                    Group child = groupExpression.child(i);
-                    pushJob(new ExploreGroupJob(child, context));
-                }
-            }
+        if (groupExpression.isUnused()) {
+            return;
         }
+
+        countJobExecutionTimesOfGroupExpressions(groupExpression);
+        List<Rule> implementationRules = getRuleSet().getImplementationRules();
+        List<Rule> explorationRules = getExplorationRules();
+
+        for (Rule rule : explorationRules) {
+            if (rule.isInvalid(disableRules, groupExpression)) {
+                continue;
+            }
+            pushJob(new ApplyRuleJob(groupExpression, rule, context));
+        }
+
+        for (Rule rule : implementationRules) {
+            if (rule.isInvalid(disableRules, groupExpression)) {
+                continue;
+            }
+            pushJob(new ApplyRuleJob(groupExpression, rule, context));
+        }
+    }
+
+    private List<Rule> getExplorationRules() {
+        return ImmutableList.<Rule>builder()
+                .addAll(getJoinRules())
+                .addAll(getMvRules())
+                .build();
+    }
+
+    private List<Rule> getJoinRules() {
+        boolean isDisableJoinReorder = context.getCascadesContext().getConnectContext().getSessionVariable()
+                .isDisableJoinReorder()
+                || context.getCascadesContext().getMemo().getGroupExpressionsSize() > context.getCascadesContext()
+                .getConnectContext().getSessionVariable().memoMaxGroupExpressionSize;
+        boolean isDpHyp = context.getCascadesContext().getStatementContext().isDpHyp();
+        boolean isEnableBushyTree = context.getCascadesContext().getConnectContext().getSessionVariable()
+                .isEnableBushyTree();
+        boolean isLeftZigZagTree = context.getCascadesContext().getConnectContext()
+                .getSessionVariable().isEnableLeftZigZag()
+                || (groupExpression.getOwnerGroup() != null && !groupExpression.getOwnerGroup().isStatsReliable());
+        int joinNumBushyTree = context.getCascadesContext().getConnectContext()
+                .getSessionVariable().getMaxJoinNumBushyTree();
+        if (isDisableJoinReorder) {
+            return Collections.emptyList();
+        } else if (isDpHyp) {
+            return getRuleSet().getDPHypReorderRules();
+        } else if (isLeftZigZagTree) {
+            return getRuleSet().getLeftZigZagTreeJoinReorder();
+        } else if (isEnableBushyTree) {
+            return getRuleSet().getBushyTreeJoinReorder();
+        } else if (context.getCascadesContext().getStatementContext().getMaxNAryInnerJoin() <= joinNumBushyTree) {
+            return getRuleSet().getBushyTreeJoinReorder();
+        } else {
+            return getRuleSet().getZigZagTreeJoinReorder();
+        }
+    }
+
+    private List<Rule> getMvRules() {
+        ConnectContext connectContext = context.getCascadesContext().getConnectContext();
+        if (connectContext.getSessionVariable().isEnableMaterializedViewRewrite()) {
+            return getRuleSet().getMaterializedViewRules();
+        }
+        return ImmutableList.of();
     }
 }

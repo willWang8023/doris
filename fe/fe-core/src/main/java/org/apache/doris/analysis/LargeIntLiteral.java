@@ -38,7 +38,7 @@ import java.nio.ByteOrder;
 import java.util.Objects;
 
 // large int for the num that native types can not
-public class LargeIntLiteral extends LiteralExpr {
+public class LargeIntLiteral extends NumericLiteralExpr {
     private static final Logger LOG = LogManager.getLogger(LargeIntLiteral.class);
 
     // -2^127
@@ -73,6 +73,25 @@ public class LargeIntLiteral extends LiteralExpr {
         BigInteger bigInt;
         try {
             bigInt = new BigInteger(value);
+            // ATTN: value from 'sql_parser.y' is always be positive. for example: '-256' will to be
+            // 256, and for int8_t, 256 is invalid, while -256 is valid. So we check the right border
+            // is LARGE_INT_MAX_ABS
+            if (bigInt.compareTo(LARGE_INT_MIN) < 0 || bigInt.compareTo(LARGE_INT_MAX_ABS) > 0) {
+                throw new AnalysisException("Large int literal is out of range: " + value);
+            }
+        } catch (NumberFormatException e) {
+            throw new AnalysisException("Invalid integer literal: " + value, e);
+        }
+        this.value = bigInt;
+        type = Type.LARGEINT;
+        analysisDone();
+    }
+
+    public LargeIntLiteral(BigDecimal value) throws AnalysisException {
+        super();
+        BigInteger bigInt;
+        try {
+            bigInt = new BigInteger(value.toPlainString());
             // ATTN: value from 'sql_parser.y' is always be positive. for example: '-256' will to be
             // 256, and for int8_t, 256 is invalid, while -256 is valid. So we check the right border
             // is LARGE_INT_MAX_ABS
@@ -124,24 +143,30 @@ public class LargeIntLiteral extends LiteralExpr {
     // little endian for hash code
     @Override
     public ByteBuffer getHashValue(PrimitiveType type) {
-        ByteBuffer buffer = ByteBuffer.allocate(16);
+        int buffLen = 0;
+        if (type == PrimitiveType.DECIMAL256) {
+            buffLen = 32;
+        } else {
+            buffLen = 16;
+        }
+        ByteBuffer buffer = ByteBuffer.allocate(buffLen);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
         byte[] byteArray = value.toByteArray();
         int len = byteArray.length;
         int end = 0;
-        if (len > 16) {
-            end = len - 16;
+        if (len > buffLen) {
+            end = len - buffLen;
         }
 
         for (int i = len - 1; i >= end; --i) {
             buffer.put(byteArray[i]);
         }
         if (value.signum() >= 0) {
-            while (len++ < 16) {
+            while (len++ < buffLen) {
                 buffer.put((byte) 0);
             }
         } else {
-            while (len++ < 16) {
+            while (len++ < buffLen) {
                 buffer.put((byte) 0xFF);
             }
         }
@@ -172,6 +197,11 @@ public class LargeIntLiteral extends LiteralExpr {
     }
 
     @Override
+    public String getStringValueForArray() {
+        return "\"" + getStringValue() + "\"";
+    }
+
+    @Override
     public long getLongValue() {
         return value.longValue();
     }
@@ -197,7 +227,9 @@ public class LargeIntLiteral extends LiteralExpr {
         if (targetType.isFloatingPointType()) {
             return new FloatLiteral(new Double(value.doubleValue()), targetType);
         } else if (targetType.isDecimalV2() || targetType.isDecimalV3()) {
-            return new DecimalLiteral(new BigDecimal(value));
+            DecimalLiteral res = new DecimalLiteral(new BigDecimal(value));
+            res.setType(targetType);
+            return res;
         } else if (targetType.isIntegerType()) {
             try {
                 return new IntLiteral(value.longValueExact(), targetType);

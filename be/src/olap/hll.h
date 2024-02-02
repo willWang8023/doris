@@ -17,19 +17,18 @@
 
 #pragma once
 
-#include <math.h>
-#include <parallel_hashmap/phmap.h>
-#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 
 #include <map>
-#include <set>
 #include <string>
+#include <utility>
 
 #ifdef __x86_64__
 #include <immintrin.h>
 #endif
 
-#include "gutil/macros.h"
+#include "vec/common/hash_table/phmap_fwd_decl.h"
 
 namespace doris {
 
@@ -268,7 +267,7 @@ public:
 
 private:
     HllDataType _type = HLL_DATA_EMPTY;
-    phmap::flat_hash_set<uint64_t> _hash_set;
+    vectorized::flat_hash_set<uint64_t> _hash_set;
 
     // This field is much space consuming(HLL_REGISTERS_COUNT), we create
     // it only when it is really needed.
@@ -360,11 +359,11 @@ public:
     void parse();
 
 private:
-    char* _buf_ref;        // set
-    int _buf_len;          // set len
-    HllDataType _set_type; //set type
-    char* _full_value_position;
-    uint64_t* _explicit_value;
+    char* _buf_ref = nullptr; // set
+    int _buf_len;             // set len
+    HllDataType _set_type;    //set type
+    char* _full_value_position = nullptr;
+    uint64_t* _explicit_value = nullptr;
     ExplicitLengthValueType _explicit_num;
     std::map<SparseIndexType, SparseValueType> _sparse_map;
     SparseLengthValueType* _sparse_count;

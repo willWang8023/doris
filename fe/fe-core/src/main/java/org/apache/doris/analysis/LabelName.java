@@ -17,7 +17,6 @@
 
 package org.apache.doris.analysis;
 
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
@@ -26,12 +25,13 @@ import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
 
 import com.google.common.base.Strings;
-import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
+// TODO(tsy): maybe better to rename as `LoadLabel`
 // label name used to identify a load job
 public class LabelName implements Writable {
     private String dbName;
@@ -61,7 +61,6 @@ public class LabelName implements Writable {
             }
             dbName = analyzer.getDefaultDb();
         }
-        dbName = ClusterNamespace.getFullName(analyzer.getClusterName(), dbName);
         FeNameFormat.checkLabel(labelName);
     }
 

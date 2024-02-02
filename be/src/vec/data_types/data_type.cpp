@@ -21,16 +21,29 @@
 #include "vec/data_types/data_type.h"
 
 #include <fmt/format.h>
+#include <gen_cpp/data.pb.h>
+#include <gen_cpp/types.pb.h>
+
+#include <algorithm>
+#include <utility>
 
 #include "common/logging.h"
 #include "vec/columns/column.h"
 #include "vec/columns/column_const.h"
+#include "vec/core/field.h"
+
+namespace doris {
+namespace vectorized {
+class BufferWritable;
+class ReadBuffer;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 
-IDataType::IDataType() {}
+IDataType::IDataType() = default;
 
-IDataType::~IDataType() {}
+IDataType::~IDataType() = default;
 
 String IDataType::get_name() const {
     return do_get_name();
@@ -47,26 +60,23 @@ void IDataType::update_avg_value_size_hint(const IColumn& column, double& avg_va
         double current_avg_value_size = static_cast<double>(column.byte_size()) / row_size;
 
         /// Heuristic is chosen so that avg_value_size_hint increases rapidly but decreases slowly.
-        if (current_avg_value_size > avg_value_size_hint)
+        if (current_avg_value_size > avg_value_size_hint) {
             avg_value_size_hint = std::min(1024., current_avg_value_size); /// avoid overestimation
-        else if (current_avg_value_size * 2 < avg_value_size_hint)
+        } else if (current_avg_value_size * 2 < avg_value_size_hint) {
             avg_value_size_hint = (current_avg_value_size + avg_value_size_hint * 3) / 4;
+        }
     }
 }
 
 ColumnPtr IDataType::create_column_const(size_t size, const Field& field) const {
     auto column = create_column();
+    column->reserve(1);
     column->insert(field);
     return ColumnConst::create(std::move(column), size);
 }
 
 ColumnPtr IDataType::create_column_const_with_default_value(size_t size) const {
     return create_column_const(size, get_default());
-}
-
-DataTypePtr IDataType::promote_numeric_type() const {
-    LOG(FATAL) << fmt::format("Data type {} can't be promoted.", get_name());
-    return nullptr;
 }
 
 size_t IDataType::get_size_of_value_in_memory() const {
@@ -117,6 +127,10 @@ PGenericType_TypeId IDataType::get_pdata_type(const IDataType* data_type) {
         return PGenericType::INT64;
     case TypeIndex::Int128:
         return PGenericType::INT128;
+    case TypeIndex::IPv4:
+        return PGenericType::IPV4;
+    case TypeIndex::IPv6:
+        return PGenericType::IPV6;
     case TypeIndex::Float32:
         return PGenericType::FLOAT;
     case TypeIndex::Float64:
@@ -125,8 +139,12 @@ PGenericType_TypeId IDataType::get_pdata_type(const IDataType* data_type) {
         return PGenericType::DECIMAL32;
     case TypeIndex::Decimal64:
         return PGenericType::DECIMAL64;
-    case TypeIndex::Decimal128:
+    case TypeIndex::Decimal128V2:
         return PGenericType::DECIMAL128;
+    case TypeIndex::Decimal128V3:
+        return PGenericType::DECIMAL128I;
+    case TypeIndex::Decimal256:
+        return PGenericType::DECIMAL256;
     case TypeIndex::String:
         return PGenericType::STRING;
     case TypeIndex::Date:
@@ -135,17 +153,34 @@ PGenericType_TypeId IDataType::get_pdata_type(const IDataType* data_type) {
         return PGenericType::DATEV2;
     case TypeIndex::DateTime:
         return PGenericType::DATETIME;
+    case TypeIndex::VARIANT:
+        return PGenericType::VARIANT;
     case TypeIndex::DateTimeV2:
         return PGenericType::DATETIMEV2;
     case TypeIndex::BitMap:
         return PGenericType::BITMAP;
     case TypeIndex::HLL:
         return PGenericType::HLL;
+    case TypeIndex::QuantileState:
+        return PGenericType::QUANTILE_STATE;
     case TypeIndex::Array:
         return PGenericType::LIST;
+    case TypeIndex::Struct:
+        return PGenericType::STRUCT;
     case TypeIndex::FixedLengthObject:
         return PGenericType::FIXEDLENGTHOBJECT;
+    case TypeIndex::JSONB:
+        return PGenericType::JSONB;
+    case TypeIndex::Map:
+        return PGenericType::MAP;
+    case TypeIndex::Time:
+        return PGenericType::TIME;
+    case TypeIndex::AggState:
+        return PGenericType::AGG_STATE;
+    case TypeIndex::TimeV2:
+        return PGenericType::TIMEV2;
     default:
+        LOG(FATAL) << fmt::format("could not mapping type {} to pb type", data_type->get_type_id());
         return PGenericType::UNKNOWN;
     }
 }

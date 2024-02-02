@@ -15,15 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
-#include <time.h>
-
 #include <string>
 
+#include "common/status.h"
 #include "function_test_util.h"
-#include "runtime/tuple_row.h"
-#include "util/url_coding.h"
+#include "gtest/gtest_pred_impl.h"
+#include "testutil/any_type.h"
 #include "vec/core/field.h"
+#include "vec/core/types.h"
+#include "vec/data_types/data_type_nullable.h"
+#include "vec/data_types/data_type_number.h"
 
 namespace doris::vectorized {
 
@@ -44,7 +45,7 @@ TEST(function_arrays_overlap_test, arrays_overlap) {
                             {{Null(), vec1}, Null()},
                             {{empty_arr, vec1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // arrays_overlap(Array<Int128>, Array<Int128>)
@@ -57,7 +58,7 @@ TEST(function_arrays_overlap_test, arrays_overlap) {
         DataSet data_set = {
                 {{vec1, vec2}, UInt8(1)}, {{Null(), vec1}, Null()}, {{empty_arr, vec1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // arrays_overlap(Array<Float64>, Array<Float64>)
@@ -70,7 +71,7 @@ TEST(function_arrays_overlap_test, arrays_overlap) {
         DataSet data_set = {
                 {{vec1, vec2}, UInt8(1)}, {{Null(), vec1}, Null()}, {{empty_arr, vec1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // arrays_overlap(Array<Date>, Array<Date>)
@@ -84,7 +85,7 @@ TEST(function_arrays_overlap_test, arrays_overlap) {
         DataSet data_set = {
                 {{vec1, vec2}, UInt8(1)}, {{Null(), vec1}, Null()}, {{empty_arr, vec1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // arrays_overlap(Array<DateTime>, Array<DateTime>)
@@ -101,13 +102,13 @@ TEST(function_arrays_overlap_test, arrays_overlap) {
                             {{Null(), vec1}, Null()},
                             {{empty_arr, vec1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
-    // arrays_overlap(Array<Decimal128>, Array<Decimal128>)
+    // arrays_overlap(Array<Decimal128V2>, Array<Decimal128V2>)
     {
-        InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Decimal128, TypeIndex::Array,
-                                    TypeIndex::Decimal128};
+        InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Decimal128V2, TypeIndex::Array,
+                                    TypeIndex::Decimal128V2};
 
         Array vec1 = {ut_type::DECIMALFIELD(17014116.67), ut_type::DECIMALFIELD(-17014116.67),
                       ut_type::DECIMALFIELD(0.0)};
@@ -115,7 +116,7 @@ TEST(function_arrays_overlap_test, arrays_overlap) {
         DataSet data_set = {
                 {{vec1, vec2}, UInt8(1)}, {{Null(), vec1}, Null()}, {{empty_arr, vec1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // arrays_overlap(Array<String>, Array<String>)
@@ -131,7 +132,7 @@ TEST(function_arrays_overlap_test, arrays_overlap) {
                             {{Null(), vec1}, Null()},
                             {{empty_arr, vec1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 }
 
